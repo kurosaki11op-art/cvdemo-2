@@ -411,21 +411,32 @@ class FootfallApp:
         return cap
 
     @staticmethod
-    def _open_webcam(index):
-        """Open a webcam, preferring DirectShow on Windows (MSMF often fails to grab frames)."""
-        backends = [cv2.CAP_DSHOW, cv2.CAP_ANY] if sys.platform == "win32" else [cv2.CAP_ANY]
-        for backend in backends:
+    def _open_webcam(index, warmup_frames=40, min_brightness=8.0):
+        """Open a webcam and only accept a backend that delivers real (non-black) frames.
+
+        On Windows, DirectShow and Media Foundation (MSMF) each fail on some cameras,
+        either by returning no frames or all-black frames, so both are tried.
+        """
+        if sys.platform == "win32":
+            backends = [("DirectShow", cv2.CAP_DSHOW), ("MSMF", cv2.CAP_MSMF), ("default", cv2.CAP_ANY)]
+        else:
+            backends = [("default", cv2.CAP_ANY)]
+        for name, backend in backends:
             cap = cv2.VideoCapture(index, backend)
             if cap.isOpened():
-                for _ in range(10):          # warm-up: first frames are often empty
-                    ok, _frame = cap.read()
-                    if ok:
+                for _ in range(warmup_frames):    # cameras need time to auto-expose
+                    ok, frame = cap.read()
+                    if ok and frame is not None and frame.mean() > min_brightness:
+                        print(f"Webcam {index} opened with the {name} backend.")
                         return cap
+                    cv2.waitKey(30)
             cap.release()
+            print(f"Webcam {index}: {name} backend gave no usable frames, trying next...")
         raise RuntimeError(
-            f"Webcam {index} opened but delivered no frames. Close other apps using the "
-            "camera (another copy of this script, Zoom/Teams/browser tabs) and try "
-            "--source 1 if you have more than one camera.")
+            f"Webcam {index} delivered no usable (or only black) frames. Check: the camera "
+            "privacy shutter/cover, Windows Settings > Privacy > Camera (allow desktop apps), "
+            "and close other apps using the camera (another copy of this script, Teams/Zoom, "
+            "browser tabs). Try --source 1 if you have more than one camera.")
 
     def _reset_tracker(self):
         """Forget tracker state (new IDs) - used when a video loops."""
