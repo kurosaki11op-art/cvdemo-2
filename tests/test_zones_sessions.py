@@ -113,3 +113,39 @@ def test_first_sighting_inside_a_zone_counts_from_then():
 
 def test_default_config_has_no_zones_until_added():
     assert default_config().zones == []
+
+
+def test_stitching_continues_a_session_when_the_tracker_changes_the_id():
+    tr = tracker(stitch_s=3.0)
+    for i in range(40):
+        tr.update(i * 0.1, [(1, A)])                                       # id 1 stands in Display A for 4 s
+    for i in range(40, 80):
+        tr.update(i * 0.1, [(2, (105, 124))])                              # id 2 appears right there; id 1 vanished
+    (rec,) = tr.flush()
+    assert rec.path == ["Display A"] and rec.visits[0].dwell_s == pytest.approx(7.9, abs=0.3)
+
+
+def test_stitching_does_not_take_over_hidden_or_still_observed_sessions_or_far_ones():
+    tr = tracker()
+    for i in range(20):
+        tr.update(i * 0.1, [(1, A), (2, B)])
+    tr.update(2.0, [(3, (110, 125))], alive=[1])                           # id 1 is hidden, not lost
+    assert 1 in tr.live and 3 in tr.live and len(tr.live) == 3
+    tr2 = tracker()
+    for i in range(20):
+        tr2.update(i * 0.1, [(1, A)])
+    tr2.update(2.2, [(9, (450, 40))])                                      # far away: a different person
+    assert len(tr2.live) == 2
+    tr3 = tracker(stitch_s=0.0)
+    for i in range(20):
+        tr3.update(i * 0.1, [(1, A)])
+    tr3.update(2.2, [(9, A)])
+    assert len(tr3.live) == 2                                              # stitching switched off
+
+
+def test_no_stitching_at_the_entrance():
+    tr = tracker()
+    for i in range(20):
+        tr.update(i * 0.1, [(1, ENT)])
+    tr.update(2.2, [(2, (260, 455))])                                      # a new arrival right where someone left
+    assert len(tr.live) == 2

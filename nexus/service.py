@@ -58,7 +58,8 @@ class Service:
         self.source = source or FrameSource(cfg.source, loop=cfg.service.loop)
         sv = cfg.service
         a = cfg.analytics
-        self.sessions = SessionTracker(ZoneMap(cfg.zones), a.min_zone_dwell_s, a.switch_hold_s, a.session_timeout_s)
+        self.sessions = SessionTracker(ZoneMap(cfg.zones), a.min_zone_dwell_s, a.switch_hold_s,
+                                       a.session_timeout_s, a.stitch_s)
         self.occupancy = OccupancyTracker(self.store, cfg.camera_id, sv.initial_occupancy, sv.occupancy_reset)
         self.stop_event = threading.Event()
         self.state = "starting"
@@ -160,7 +161,8 @@ class Service:
                 fps_frames += 1
                 obs = [(int(t), (float(p[0]), float(p[1])))
                        for t, p in zip(result.ids, result.floor_points, strict=True)]
-                self._save_sessions(self.sessions.update(now, obs, [(e.track_id, e.direction) for e in result.events]))
+                self._save_sessions(self.sessions.update(now, obs, [(e.track_id, e.direction) for e in result.events],
+                                                         result.hidden_ids))
                 for ev in result.events:
                     self.store.add_event(now, cfg.camera_id, ev.direction)
                     self.occupancy.apply(ev.direction)

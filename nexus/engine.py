@@ -71,6 +71,7 @@ class FrameResult:
     points: List[Tuple[float, float]]  # tracked anchor point per person (camera pixels)
     floor_points: np.ndarray          # the same points on the floor canvas
     events: List[CrossingEvent]
+    hidden_ids: List[int] = field(default_factory=list)   # alive but suppressed this frame (reflections)
 
 
 class CountingEngine:
@@ -119,7 +120,7 @@ class CountingEngine:
 
         if self.frame_count % 300 == 0:
             self.tripwire.forget(self.identity.active_ids())
-        return FrameResult(frame, xyxy, ids, points, floor_pts, events)
+        return FrameResult(frame, xyxy, ids, points, floor_pts, events, sorted(self.identity.suppressed))
 
     def _anchor(self, box: np.ndarray) -> Tuple[float, float]:
         x1, y1, x2, y2 = box

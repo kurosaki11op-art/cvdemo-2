@@ -55,7 +55,7 @@ def test_service_turns_standing_in_a_zone_into_a_stored_session(zcfg, frame):
     engine = CountingEngine(zcfg, FakeDetector())
     cam_a = floor_to_cam(engine, 110, 120)                       # inside "Display A"
     cam_c = floor_to_cam(engine, 420, 340)                       # inside "Checkout"
-    script = [det((1, *cam_a))] * 40 + [det((1, *cam_c))] * 30
+    script = [det((1, *cam_a))] * 50 + [det((1, *cam_c))] * 50
     engine.detector.script = script
     ticks = iter(range(10_000))
     zcfg.service.heartbeat_s = 1e9

@@ -69,7 +69,7 @@ def cmd_demo(args: argparse.Namespace) -> int:
     engine = CountingEngine(cfg)
     view = DemoView(engine)
     a = cfg.analytics
-    tracker = SessionTracker(ZoneMap(cfg.zones), a.min_zone_dwell_s, a.switch_hold_s, a.session_timeout_s)
+    tracker = SessionTracker(ZoneMap(cfg.zones), a.min_zone_dwell_s, a.switch_hold_s, a.session_timeout_s, a.stitch_s)
     src = FrameSource(cfg.source, loop=args.loop or cfg.service.loop).open()
     initial = cfg.service.initial_occupancy
     drops = 0
@@ -90,7 +90,8 @@ def cmd_demo(args: argparse.Namespace) -> int:
                 engine.reset_tracking()
             result = engine.process(frame)
             tracker.update(time.time(), [(int(t), (float(p[0]), float(p[1])))
-                                         for t, p in zip(result.ids, result.floor_points, strict=True)])
+                                         for t, p in zip(result.ids, result.floor_points, strict=True)],
+                           alive=result.hidden_ids)
             image = view.compose(result, initial, tracker.current_zone_counts())
             if args.scale != 1.0:
                 image = cv2.resize(image, None, fx=args.scale, fy=args.scale, interpolation=cv2.INTER_AREA)

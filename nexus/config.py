@@ -62,9 +62,10 @@ class ZoneConfig:
 
 @dataclass
 class AnalyticsConfig:
-    min_zone_dwell_s: float = 2.0        # time inside a zone before it counts as a visit
+    min_zone_dwell_s: float = 3.0        # time inside a zone before it counts as a visit
     switch_hold_s: float = 0.6           # a new zone must hold this long before we switch (anti-flicker)
     session_timeout_s: float = 6.0       # a visitor unseen this long has left
+    stitch_s: float = 3.0                # a new id where another just vanished continues it (0 = off)
     funnel: Any = ()                     # zone names in order, e.g. [Display A, Checkout]
 
 
@@ -208,8 +209,9 @@ def _validate_zones(self: "Config") -> None:
             raise ConfigError(f"{where}.polygon ({z.name}): zero area")
         z.polygon = tuple(poly)
     a = self.analytics
-    if float(a.min_zone_dwell_s) < 0 or float(a.switch_hold_s) < 0 or float(a.session_timeout_s) <= 0:
-        raise ConfigError("analytics: dwell/hold must be >= 0 and session_timeout_s > 0")
+    if (float(a.min_zone_dwell_s) < 0 or float(a.switch_hold_s) < 0 or float(a.session_timeout_s) <= 0
+            or float(a.stitch_s) < 0):
+        raise ConfigError("analytics: dwell/hold/stitch must be >= 0 and session_timeout_s > 0")
     a.funnel = tuple(str(n) for n in a.funnel)
     for step in a.funnel:
         if step not in names:

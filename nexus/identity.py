@@ -63,6 +63,7 @@ class IdentityFilter:
         self.conf_ema: Dict[int, float] = {}  # canonical id -> smoothed detector confidence
         self.last_seen: Dict[int, int] = {}  # canonical id -> frame number
         self.gallery: Dict[int, dict] = {}   # canonical id -> last appearance (confirmed only)
+        self.suppressed: Set[int] = set()    # canonical ids hidden this frame as twins (still alive)
 
     def active_ids(self) -> Set[int]:
         """Canonical ids still remembered (anything else can be forgotten by the counter)."""
@@ -131,11 +132,13 @@ class IdentityFilter:
         order = sorted(range(n), key=lambda k: (self.conf_ema[canon_of[k]], self.hits.get(canon_of[k], 0)),
                        reverse=True)
         kept: List[int] = []
+        self.suppressed = set()
         for k in order:
             if self.twin and any(
                     self._sim(hists[k], hists[j]) >= self.twin_thresh
                     and 0.1 <= self._area(xyxy[k]) / self._area(xyxy[j]) <= 10.0
                     for j in kept):
+                self.suppressed.add(canon_of[k])
                 continue
             kept.append(k)
 

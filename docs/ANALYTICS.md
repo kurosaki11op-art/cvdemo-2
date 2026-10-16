@@ -5,7 +5,7 @@ The camera turns a shop into something you can analyse the way you analyse a web
 | Website | Physical store (NEXUS) |
 |---|---|
 | Page | **Zone**: a named floor area (Entrance, Display A, Checkout...) drawn on the top-down map |
-| Page views | **Zone stops**: standing in a zone for at least `min_zone_dwell_s` (default 2 s) |
+| Page views | **Zone stops**: standing in a zone for at least `min_zone_dwell_s` (default 3 s) |
 | Unique visitors | **Visitors**: one anonymous track from first to last sighting |
 | Time on page | **Dwell time** per stop |
 | Bounce rate | Share of visitors who never stopped at any zone beyond the entrance |
@@ -50,6 +50,8 @@ banner and `nexus report` states it. `seed-demo` refuses to touch a database tha
 2. `SessionTracker` assigns the position to a zone. A change of zone must hold for `switch_hold_s` (default 0.6 s), so
    standing on a border does not create many fake stops.
 3. Time in a zone shorter than `min_zone_dwell_s` is dropped (walking past).
+   *Stitching*: if the tracker changes a person's id mid-visit, the new id continues the old session when it appears
+   within `stitch_s` (default 3 s) and a short distance from where the old one vanished (not at the entrance).
 4. A person unseen for `session_timeout_s` (default 6 s) has left: the session is written to the database.
 
 Stored per visit: start/end time, whether they crossed the door line, and the ordered zone stops with dwell times.

@@ -39,9 +39,10 @@ zones:
   - {name: Checkout,  kind: checkout, polygon: [[360, 290], [480, 290], [480, 390], [360, 390]]}
 
 analytics:
-  min_zone_dwell_s: 2            # a stop shorter than this is just walking past
+  min_zone_dwell_s: 3            # a stop shorter than this is just walking past
   switch_hold_s: 0.6             # a new zone must hold this long (no flicker at borders)
   session_timeout_s: 6           # a visitor unseen this long has left
+  stitch_s: 3                    # a new id appearing where another vanished this recently continues that visit (0 = off)
   funnel: []                     # optional ordered zone names, e.g. [Display A, Checkout]
 
 storage:
