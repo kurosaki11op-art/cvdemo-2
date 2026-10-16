@@ -17,8 +17,10 @@ from .config import Config
 from .engine import CountingEngine
 from .heatmap import render_heat
 from .occupancy import OccupancyTracker
+from .sessions import SessionTracker
 from .sources import FrameSource, SourceError
 from .storage import EventStore
+from .zones import ZoneMap
 
 log = logging.getLogger("nexus.service")
 
@@ -55,6 +57,8 @@ class Service:
         self._engine = engine            # built lazily so a bad source fails before the model loads
         self.source = source or FrameSource(cfg.source, loop=cfg.service.loop)
         sv = cfg.service
+        a = cfg.analytics
+        self.sessions = SessionTracker(ZoneMap(cfg.zones), a.min_zone_dwell_s, a.switch_hold_s, a.session_timeout_s)
         self.occupancy = OccupancyTracker(self.store, cfg.camera_id, sv.initial_occupancy, sv.occupancy_reset)
         self.stop_event = threading.Event()
         self.state = "starting"
@@ -87,8 +91,13 @@ class Service:
             self.engine.period_heat.reset()
         self._period_start = now
 
+    def _save_sessions(self, records: list) -> None:
+        for rec in records:
+            self.store.add_session(self.cfg.camera_id, rec)
+
     def _write_status(self, now: float) -> None:
-        status = {"camera_id": self.cfg.camera_id, "state": self.state, "ts": now,
+        status = {"zone_counts": self.sessions.current_zone_counts(),
+                  "camera_id": self.cfg.camera_id, "state": self.state, "ts": now,
                   "fps": round(self._fps, 1), "frames": self.frames,
                   "session_entries": self.engine.entries, "session_exits": self.engine.exits,
                   "occupancy": self.occupancy.value, "last_event_ts": self.last_event_ts}
@@ -134,10 +143,12 @@ class Service:
                     if self.stop_event.wait(sv.reconnect_delay_s):
                         break
                     if self.source.reopen():
+                        self._save_sessions(self.sessions.flush())
                         self.engine.reset_tracking()
                         self.state = "running"
                     continue
                 if self.source.consume_wrap():
+                    self._save_sessions(self.sessions.flush())
                     self.engine.reset_tracking()
                 now = self.clock()
                 if min_interval and now - last_proc < min_interval:
@@ -147,6 +158,9 @@ class Service:
                 result = self.engine.process(frame)
                 self.frames += 1
                 fps_frames += 1
+                obs = [(int(t), (float(p[0]), float(p[1])))
+                       for t, p in zip(result.ids, result.floor_points, strict=True)]
+                self._save_sessions(self.sessions.update(now, obs, [(e.track_id, e.direction) for e in result.events]))
                 for ev in result.events:
                     self.store.add_event(now, cfg.camera_id, ev.direction)
                     self.occupancy.apply(ev.direction)
@@ -180,6 +194,7 @@ class Service:
             return_code = 0
         finally:
             now = self.clock()
+            self._save_sessions(self.sessions.flush())
             self._flush_heat(now)
             if self.state != "error":
                 self.state = "stopped"

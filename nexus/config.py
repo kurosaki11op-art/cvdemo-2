@@ -49,6 +49,25 @@ class HomographyConfig:
     canvas: Any = (500, 500)             # (width, height) of the top-down floor grid
 
 
+ZONE_KINDS = ("entrance", "area", "checkout")
+
+
+@dataclass
+class ZoneConfig:
+    """A named floor area, drawn on the top-down map (the 'page' of a physical store)."""
+    name: str = ""
+    polygon: Any = ()                    # [[x, y], ...] in floor-canvas coordinates
+    kind: str = "area"                   # entrance | area | checkout
+
+
+@dataclass
+class AnalyticsConfig:
+    min_zone_dwell_s: float = 2.0        # time inside a zone before it counts as a visit
+    switch_hold_s: float = 0.6           # a new zone must hold this long before we switch (anti-flicker)
+    session_timeout_s: float = 6.0       # a visitor unseen this long has left
+    funnel: Any = ()                     # zone names in order, e.g. [Display A, Checkout]
+
+
 @dataclass
 class StorageConfig:
     db_path: str = "data/nexus.db"
@@ -81,6 +100,8 @@ class Config:
     detection: DetectionConfig = field(default_factory=DetectionConfig)
     tripwire: TripwireConfig = field(default_factory=TripwireConfig)
     homography: HomographyConfig = field(default_factory=HomographyConfig)
+    zones: List[ZoneConfig] = field(default_factory=list)
+    analytics: AnalyticsConfig = field(default_factory=AnalyticsConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
     service: ServiceConfig = field(default_factory=ServiceConfig)
     dashboard: DashboardConfig = field(default_factory=DashboardConfig)
@@ -139,6 +160,8 @@ class Config:
         if not np.all(np.isfinite(matrix)):
             raise ConfigError("homography points produce a degenerate transform")
 
+        self._validate_zones()
+
         s = self.storage
         if float(s.snapshot_interval_s) < 1:
             raise ConfigError("storage.snapshot_interval_s must be >= 1")
@@ -157,6 +180,54 @@ class Config:
         if not 1 <= int(dash.port) <= 65535:
             raise ConfigError("dashboard.port must be 1-65535")
         return self
+
+
+def _validate_zones(self: "Config") -> None:
+    cw, ch = self.homography.canvas
+    names = set()
+    for i, z in enumerate(self.zones):
+        where = f"zones[{i}]"
+        if not re.fullmatch(r"[^\W_][\w .&'/-]{0,39}", str(z.name)):
+            raise ConfigError(f"{where}.name: 1-40 characters (letters, digits, space, . & ' / -)")
+        if z.name in names:
+            raise ConfigError(f"{where}.name: duplicate zone name {z.name!r}")
+        names.add(z.name)
+        if z.kind not in ZONE_KINDS:
+            raise ConfigError(f"{where}.kind must be one of {list(ZONE_KINDS)}")
+        try:
+            poly = [(float(x), float(y)) for x, y in z.polygon]
+        except (TypeError, ValueError):
+            raise ConfigError(f"{where}.polygon: expected a list of [x, y] points") from None
+        if len(poly) < 3:
+            raise ConfigError(f"{where}.polygon ({z.name}): need at least 3 points")
+        if not all(0 <= x <= cw and 0 <= y <= ch for x, y in poly):
+            raise ConfigError(f"{where}.polygon ({z.name}): points must lie inside the {cw}x{ch} floor map")
+        twice_area = sum(poly[k][0] * poly[(k + 1) % len(poly)][1] - poly[(k + 1) % len(poly)][0] * poly[k][1]
+                         for k in range(len(poly)))
+        if abs(twice_area) < 1.0:
+            raise ConfigError(f"{where}.polygon ({z.name}): zero area")
+        z.polygon = tuple(poly)
+    a = self.analytics
+    if float(a.min_zone_dwell_s) < 0 or float(a.switch_hold_s) < 0 or float(a.session_timeout_s) <= 0:
+        raise ConfigError("analytics: dwell/hold must be >= 0 and session_timeout_s > 0")
+    a.funnel = tuple(str(n) for n in a.funnel)
+    for step in a.funnel:
+        if step not in names:
+            raise ConfigError(f"analytics.funnel: unknown zone {step!r}; zones are {sorted(names)}")
+
+
+Config._validate_zones = _validate_zones  # type: ignore[attr-defined]
+
+
+def sample_zones() -> List[ZoneConfig]:
+    """Illustrative zones for the default 500x500 floor map (replace with your own layout)."""
+    return [
+        ZoneConfig("Entrance", ((0, 410), (499, 410), (499, 499), (0, 499)), "entrance"),
+        ZoneConfig("Display A", ((30, 60), (190, 60), (190, 180), (30, 180)), "area"),
+        ZoneConfig("Display B", ((300, 50), (470, 50), (470, 170), (300, 170)), "area"),
+        ZoneConfig("Display C", ((160, 220), (340, 220), (340, 320), (160, 320)), "area"),
+        ZoneConfig("Checkout", ((360, 290), (480, 290), (480, 390), (360, 390)), "checkout"),
+    ]
 
 
 # ---------------------------------------------------------------------- loading
@@ -216,7 +287,17 @@ def _from_dict(cls: Any, data: Any, where: str) -> Any:
     kwargs = {}
     for key, value in data.items():
         hint = hints[key]
-        kwargs[key] = _from_dict(hint, value, f"{where}.{key}") if dataclasses.is_dataclass(hint) else value
+        args = typing.get_args(hint)
+        if dataclasses.is_dataclass(hint):
+            kwargs[key] = _from_dict(hint, value, f"{where}.{key}")
+        elif typing.get_origin(hint) is list and args and dataclasses.is_dataclass(args[0]):
+            if value is None:
+                value = []
+            if not isinstance(value, list):
+                raise ConfigError(f"{where}.{key}: expected a list")
+            kwargs[key] = [_from_dict(args[0], item, f"{where}.{key}[{i}]") for i, item in enumerate(value)]
+        else:
+            kwargs[key] = value
     return cls(**kwargs)
 
 
@@ -254,5 +335,6 @@ def save_config(cfg: Config, path: Union[str, Path]) -> None:
 __all__: List[str] = [
     "Config", "ConfigError", "DetectionConfig", "TripwireConfig", "HomographyConfig",
     "StorageConfig", "ServiceConfig", "DashboardConfig", "load_config", "save_config",
-    "default_config", "config_from_dict", "config_to_dict",
+    "default_config", "config_from_dict", "config_to_dict", "ZoneConfig", "AnalyticsConfig", "sample_zones",
+    "ZONE_KINDS",
 ]

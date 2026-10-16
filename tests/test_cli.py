@@ -46,7 +46,7 @@ def test_purge_runs(tmp_path, capsys):
 def test_all_subcommands_have_help():
     p = build_parser()
     commands = ("demo", "run", "dashboard", "calibrate", "label", "evaluate", "export-model",
-                "init-config", "purge", "healthcheck")
+                "init-config", "purge", "healthcheck", "zones", "report", "seed-demo")
     for cmd in commands:
         with pytest.raises(SystemExit) as e:
             p.parse_args([cmd, "--help"])
@@ -75,3 +75,33 @@ def test_healthcheck_follows_the_heartbeat(tmp_path):
     assert main(["healthcheck", "--config", str(cfgp)]) == 1                     # nothing running
     (tmp_path / "status-camera-1.json").write_text(json.dumps({"state": "running", "ts": time.time()}))
     assert main(["healthcheck", "--config", str(cfgp)]) == 0
+
+
+def test_report_and_seed_demo_end_to_end(tmp_path, capsys):
+    cfgp = tmp_path / "c.yaml"
+    main(["init-config", "--out", str(cfgp)])
+    cfgp.write_text(cfgp.read_text().replace("data/nexus.db", str(tmp_path / "n.db")))
+    assert main(["seed-demo", "--config", str(cfgp), "--days", "2", "--seed", "5"]) == 0
+    assert "DEMO data" in capsys.readouterr().out
+    assert main(["report", "--config", str(cfgp), "--days", "2"]) == 0
+    out = capsys.readouterr().out
+    assert "Store analytics" in out and "generated demo data" in out and "Zones, most visited first" in out
+    assert main(["report", "--config", str(cfgp), "--days", "2", "--format", "json"]) == 0
+    import json
+    rep = json.loads(capsys.readouterr().out)
+    assert rep["overview"]["visitors"] > 100 and rep["demo_data"] is True
+
+
+def test_seed_demo_refuses_to_overwrite_real_data(tmp_path, capsys):
+    import time
+
+    from nexus.sessions import SessionRecord
+    from nexus.storage import EventStore
+    cfgp = tmp_path / "c.yaml"
+    main(["init-config", "--out", str(cfgp)])
+    db = tmp_path / "n.db"
+    cfgp.write_text(cfgp.read_text().replace("data/nexus.db", str(db)))
+    EventStore(db).add_session("camera-1", SessionRecord(time.time(), time.time() + 30))
+    assert main(["seed-demo", "--config", str(cfgp)]) == 1
+    assert "REAL data" in capsys.readouterr().err
+    assert main(["seed-demo", "--config", str(cfgp), "--force", "--days", "1"]) == 0

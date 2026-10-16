@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -24,6 +24,18 @@ def _fit(img: np.ndarray, size: Tuple[int, int]) -> np.ndarray:
     return out
 
 
+def draw_zones(img: np.ndarray, zones, counts: Optional[Dict[str, int]] = None) -> None:
+    """Zone outlines and names on a floor-map image (optionally with live headcount)."""
+    for z in zones:
+        pts = np.array(z.polygon, dtype=np.int32).reshape(-1, 1, 2)
+        colour = (240, 180, 41) if z.kind != "entrance" else (160, 160, 160)
+        cv2.polylines(img, [pts], True, colour, 2, cv2.LINE_AA)
+        label = z.name + (f" ({counts[z.name]})" if counts and counts.get(z.name) else "")
+        x, y = int(pts[:, 0, 0].min()) + 6, int(pts[:, 0, 1].min()) + 16
+        cv2.putText(img, label, (x + 1, y + 1), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 3, cv2.LINE_AA)
+        cv2.putText(img, label, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+
+
 class DemoView:
     """Composes the dual-pane demo frame from an engine and its latest FrameResult."""
 
@@ -31,9 +43,10 @@ class DemoView:
         self.engine = engine
         self.w, self.h = engine.cfg.frame_size
 
-    def compose(self, result: FrameResult, initial_occupancy: int = 0) -> np.ndarray:
+    def compose(self, result: FrameResult, initial_occupancy: int = 0,
+                zone_counts: Optional[Dict[str, int]] = None) -> np.ndarray:
         flashes: Dict[int, str] = {e.track_id: e.direction for e in result.events}
-        return cv2.hconcat([self._left(result, flashes), self._right(result, initial_occupancy)])
+        return cv2.hconcat([self._left(result, flashes), self._right(result, initial_occupancy, zone_counts)])
 
     # -- left pane ---------------------------------------------------------------- #
     def _left(self, result: FrameResult, flashes: Dict[int, str]) -> np.ndarray:
@@ -73,9 +86,11 @@ class DemoView:
         return pane
 
     # -- right pane --------------------------------------------------------------- #
-    def _right(self, result: FrameResult, initial_occupancy: int) -> np.ndarray:
+    def _right(self, result: FrameResult, initial_occupancy: int,
+               zone_counts: Optional[Dict[str, int]] = None) -> np.ndarray:
         eng = self.engine
         floor = render_heat(eng.display_heat.canvas, min_peak=30.0, markers=result.floor_points)
+        draw_zones(floor, eng.cfg.zones, zone_counts)
         cv2.putText(floor, "TOP-DOWN FLOOR HEATMAP", (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
                     (255, 255, 255), 2, cv2.LINE_AA)
         floor = _fit(floor, (self.h, self.h))

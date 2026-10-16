@@ -9,6 +9,9 @@
 | `nexus/geometry.py` | `TripwireCounter` (cross-product, deadband, segment check, re-arm) and `FloorMapper` (homography) |
 | `nexus/heatmap.py` | Gaussian accumulation + JET rendering |
 | `nexus/storage.py` | SQLite (WAL): events, zlib-compressed heatmap deltas, key/value; retention purge |
+| `nexus/zones.py`, `nexus/sessions.py` | Named floor zones; `SessionTracker` turns per-frame positions into visitor sessions with zone stops and dwell (hysteresis, min dwell, timeout) |
+| `nexus/analytics.py` | Zone ranking, bounce, funnel, flow, paths, hourly, heat share and generated findings |
+| `nexus/demo_data.py` | Clearly-labelled synthetic sessions/heatmaps for presentations |
 | `nexus/occupancy.py` | Persisted occupancy with nightly reset |
 | `nexus/service.py` | Headless loop: throttle, persist, snapshots, atomic status file, reconnect, signals, JSON logs |
 | `nexus/dashboard.py` | Stdlib HTTP server: page, JSON API, heatmap PNG, `/healthz`, optional token |

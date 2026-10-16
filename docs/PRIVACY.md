@@ -10,6 +10,7 @@ differ by country and sector (for example GDPR in the EU/UK); have your own coun
 | Faces / biometrics | **No.** No face model is used |
 | Person identity or track ids | **No.** Ids exist in memory for tracking only |
 | Crossing events | Yes: timestamp, camera id, `IN`/`OUT` |
+| Visitor sessions | Yes: start/end time, ordered zone stops with dwell times, no id or image. A route through the shop is stored as zone names only |
 | Heatmap | Yes: aggregated dwell grids (anonymous 2D density, 5-minute deltas) |
 | Occupancy | Yes: a single number |
 

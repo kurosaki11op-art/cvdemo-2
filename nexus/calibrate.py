@@ -9,7 +9,7 @@ from typing import List, Optional, Sequence, Tuple, Union
 import cv2
 import numpy as np
 
-from .config import Config, default_config, load_config, save_config
+from .config import Config, ZoneConfig, default_config, load_config, save_config
 from .sources import FrameSource
 
 Point = Tuple[float, float]
@@ -141,3 +141,82 @@ def pick_points(source: Union[str, int], size: Tuple[int, int] = (640, 480)) -> 
         if cv2.waitKey(20) & 0xFF in (ord("q"), 27):
             break
     cv2.destroyAllWindows()
+
+
+def guess_kind(name: str) -> str:
+    n = name.lower()
+    if any(w in n for w in ("entrance", "entry", "door", "lobby")):
+        return "entrance"
+    if any(w in n for w in ("checkout", "cash", "till", "register", "pay")):
+        return "checkout"
+    return "area"
+
+
+def zones_with_polygons(base: Config, named_polygons: Sequence[Tuple[str, Sequence[Point]]]) -> Config:
+    """Return a copy of `base` whose zones are the given (name, polygon) list (validated)."""
+    cfg = copy.deepcopy(base)
+    cfg.zones = [ZoneConfig(name, [list(map(float, p)) for p in poly], guess_kind(name))
+                 for name, poly in named_polygons]
+    cfg.analytics.funnel = tuple(f for f in cfg.analytics.funnel if f in {n for n, _ in named_polygons})
+    return cfg.validate()
+
+
+def run_zone_editor(source: Union[str, int], config_path: Union[str, Path], names: Sequence[str]) -> bool:
+    """Draw store zones on the top-down floor view: click corners, 'n' closes a zone and names it
+    from `names` in order, 'u' undoes a corner, 'd' deletes the last zone, 's' saves, 'q' quits."""
+    base = load_config(config_path)
+    frame = grab_frame(source, tuple(base.frame_size))
+    m = cv2.getPerspectiveTransform(np.array(base.homography.src, np.float32),
+                                    np.array(base.homography.dst, np.float32))
+    w, h = base.homography.canvas
+    floor = cv2.warpPerspective(frame, m, (w, h))
+    done: List[Tuple[str, List[Point]]] = [(z.name, [tuple(p) for p in z.polygon]) for z in base.zones]
+    pts: List[Point] = []
+    title = "NEXUS zones (n=close zone, u=undo, d=delete last, s=save, q=quit)"
+    saved = False
+
+    def draw() -> np.ndarray:
+        img = floor.copy()
+        for name, poly in done:
+            cv2.polylines(img, [np.array(poly, np.int32).reshape(-1, 1, 2)], True, (240, 180, 41), 2)
+            cv2.putText(img, name, (int(poly[0][0]) + 4, int(poly[0][1]) + 16), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5, (255, 255, 255), 1, cv2.LINE_AA)
+        for p in pts:
+            cv2.circle(img, (int(p[0]), int(p[1])), 4, (0, 0, 255), -1)
+        if len(pts) > 1:
+            cv2.polylines(img, [np.array(pts, np.int32).reshape(-1, 1, 2)], False, (0, 255, 255), 2)
+        nxt = names[len(done)] if len(done) < len(names) else f"Zone {len(done) + 1}"
+        cv2.rectangle(img, (0, 0), (w, 22), (0, 0, 0), -1)
+        cv2.putText(img, f"Drawing: {nxt}", (6, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        return img
+
+    def on_click(event: int, x: int, y: int, *_: object) -> None:
+        if event == cv2.EVENT_LBUTTONDOWN:
+            pts.append((float(x), float(y)))
+
+    cv2.namedWindow(title)
+    cv2.setMouseCallback(title, on_click)
+    try:
+        while True:
+            cv2.imshow(title, draw())
+            key = cv2.waitKey(30) & 0xFF
+            if key in (ord("q"), 27):
+                break
+            if key == ord("u") and pts:
+                pts.pop()
+            if key == ord("d") and done:
+                done.pop()
+            if key == ord("n") and len(pts) >= 3:
+                done.append((names[len(done)] if len(done) < len(names) else f"Zone {len(done) + 1}", list(pts)))
+                pts.clear()
+            if key == ord("s"):
+                try:
+                    save_config(zones_with_polygons(base, done), config_path)
+                    print(f"Saved {len(done)} zones to {config_path}")
+                    saved = True
+                    break
+                except Exception as exc:
+                    print(f"Not saved: {exc}")
+    finally:
+        cv2.destroyAllWindows()
+    return saved

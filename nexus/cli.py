@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import time
 from typing import List, Optional
 
 import cv2
@@ -62,8 +63,13 @@ def cmd_demo(args: argparse.Namespace) -> int:
         d.anchor = "center"
     cfg.validate()
 
+    from .sessions import SessionTracker
+    from .zones import ZoneMap
+
     engine = CountingEngine(cfg)
     view = DemoView(engine)
+    a = cfg.analytics
+    tracker = SessionTracker(ZoneMap(cfg.zones), a.min_zone_dwell_s, a.switch_hold_s, a.session_timeout_s)
     src = FrameSource(cfg.source, loop=args.loop or cfg.service.loop).open()
     initial = cfg.service.initial_occupancy
     drops = 0
@@ -83,7 +89,9 @@ def cmd_demo(args: argparse.Namespace) -> int:
             if src.consume_wrap():
                 engine.reset_tracking()
             result = engine.process(frame)
-            image = view.compose(result, initial)
+            tracker.update(time.time(), [(int(t), (float(p[0]), float(p[1])))
+                                         for t, p in zip(result.ids, result.floor_points, strict=True)])
+            image = view.compose(result, initial, tracker.current_zone_counts())
             if args.scale != 1.0:
                 image = cv2.resize(image, None, fx=args.scale, fy=args.scale, interpolation=cv2.INTER_AREA)
             cv2.imshow("NEXUS Vision Node", image)
@@ -190,6 +198,45 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_zones(args: argparse.Namespace) -> int:
+    from .calibrate import run_zone_editor
+
+    names = [n.strip() for n in (args.names or "").split(",") if n.strip()]
+    return 0 if run_zone_editor(args.source, args.config, names) else 1
+
+
+def cmd_report(args: argparse.Namespace) -> int:
+    import json
+
+    from .analytics import build_report, format_report, period_bounds
+    from .storage import EventStore
+
+    cfg = _load(args)
+    t0, t1 = period_bounds(args.date, args.days)
+    rep = build_report(EventStore(cfg.storage.db_path), cfg, t0, t1)
+    print(json.dumps(rep, indent=2) if args.format == "json" else format_report(rep))
+    return 0
+
+
+def cmd_seed_demo(args: argparse.Namespace) -> int:
+    from .demo_data import generate
+    from .storage import EventStore
+
+    cfg = _load(args)
+    store = EventStore(cfg.storage.db_path)
+    is_demo = store.get_kv(f"demo_data:{cfg.camera_id}") == "1"
+    has_data = bool(store.sessions(cfg.camera_id, 0, 4e12)) or sum(store.counts(cfg.camera_id, 0, 4e12)) > 0
+    if has_data and not is_demo and not args.force:
+        raise ConfigError(f"{cfg.storage.db_path} already holds REAL data for {cfg.camera_id}; "
+                          "use another db_path/camera_id, or pass --force to wipe it")
+    if has_data:
+        store.delete_demo_data(cfg.camera_id)
+    n = generate(store, cfg, days=args.days, seed=args.seed)
+    print(f"Wrote DEMO data ({n['sessions']} visitors over {args.days} days) to {cfg.storage.db_path}. "
+          f"Now run: nexus dashboard --config {args.config}")
+    return 0
+
+
 def cmd_export(args: argparse.Namespace) -> int:
     from ultralytics import YOLO
 
@@ -199,9 +246,12 @@ def cmd_export(args: argparse.Namespace) -> int:
 
 
 def cmd_init(args: argparse.Namespace) -> int:
+    from .config import sample_zones
+
     cfg = default_config()
     cfg.camera_id = args.camera_id
     cfg.source = args.source
+    cfg.zones = sample_zones()
     save_config(cfg, args.out)
     print(f"Wrote {args.out}. Next: `nexus calibrate --config {args.out} --source <video|0>`")
     return 0
@@ -272,6 +322,26 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--report", help="write the report as JSON")
     e.add_argument("--min-f1", type=float, default=None, help="exit 2 if overall F1 is lower")
     e.set_defaults(func=cmd_evaluate)
+
+    zn = sub.add_parser("zones", help="draw store zones (Entrance, Display A, Checkout...) on the floor map")
+    zn.add_argument("--config", required=True)
+    zn.add_argument("--source", required=True)
+    zn.add_argument("--names", help='comma-separated names in drawing order, e.g. "Entrance,Display A,Checkout"')
+    zn.set_defaults(func=cmd_zones)
+
+    rp = sub.add_parser("report", help="print the store analytics report (zones, dwell, funnel, paths, findings)")
+    add_cfg(rp, source=False)
+    rp.add_argument("--date", help="last day of the period, YYYY-MM-DD (default today)")
+    rp.add_argument("--days", type=int, default=1)
+    rp.add_argument("--format", choices=["text", "json"], default="text")
+    rp.set_defaults(func=cmd_report)
+
+    sd = sub.add_parser("seed-demo", help="fill the database with clearly-labelled DEMO data for a presentation")
+    add_cfg(sd, source=False)
+    sd.add_argument("--days", type=int, default=7)
+    sd.add_argument("--seed", type=int, default=42)
+    sd.add_argument("--force", action="store_true", help="wipe a database that holds real data")
+    sd.set_defaults(func=cmd_seed_demo)
 
     x = sub.add_parser("export-model", help="export YOLO weights to ONNX/TensorRT/OpenVINO")
     x.add_argument("--model", default="yolov8n.pt")

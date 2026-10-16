@@ -1,6 +1,6 @@
 """Small dependency-free web dashboard and JSON API (stdlib http.server).
 
-Routes: /  (page) | /api/summary | /api/hourly | /api/heatmap.png | /healthz
+Routes: /  (page) | /api/analytics | /api/summary | /api/hourly | /api/heatmap.png | /healthz
 Bind to 127.0.0.1 and put a reverse proxy (TLS, auth) in front for anything but a LAN demo;
 `dashboard.api_token` adds a simple shared-secret check.
 """
@@ -73,9 +73,25 @@ def build_hourly(cfg: Config, store: EventStore, day: Optional[str] = None) -> D
     return {"date": dt.date.fromtimestamp(t0).isoformat(), "hours": rows}
 
 
-def build_heatmap_png(cfg: Config, store: EventStore, day: Optional[str], h0: int, h1: int) -> bytes:
+def build_analytics(cfg: Config, store: EventStore, day: Optional[str] = None, days: int = 1) -> Dict[str, Any]:
+    from .analytics import build_report, period_bounds
+    t0, t1 = period_bounds(day, days)
+    rep = build_report(store, cfg, t0, t1)
+    status = read_status(cfg)
+    rep.update({"date": dt.date.fromtimestamp(t0).isoformat(), "days": days, "occupancy": status.get("occupancy"),
+                "zone_counts": status.get("zone_counts", {}), "service_state": status.get("state"),
+                "healthy": is_healthy(cfg), "fps": status.get("fps"),
+                "zone_polygons": [{"name": z.name, "kind": z.kind, "polygon": [list(p) for p in z.polygon]}
+                                  for z in cfg.zones]})
+    return rep
+
+
+def build_heatmap_png(cfg: Config, store: EventStore, day: Optional[str], h0: int, h1: int,
+                      days: int = 1, zones: bool = True) -> bytes:
+    from .ui import draw_zones
     t0, _ = day_bounds(day)
-    grid = store.heat_sum(cfg.camera_id, t0 + h0 * 3600, t0 + h1 * 3600)
+    t0 -= (days - 1) * 86400
+    grid = store.heat_sum(cfg.camera_id, t0 + h0 * 3600, t0 + (days - 1) * 86400 + h1 * 3600)
     if grid is None:
         w, h = cfg.homography.canvas
         grid = np.zeros((h, w), dtype=np.float32)
@@ -84,51 +100,85 @@ def build_heatmap_png(cfg: Config, store: EventStore, day: Optional[str], h0: in
                     0.7, (255, 255, 255), 2, cv2.LINE_AA)
     else:
         img = render_heat(grid, min_peak=1e-6)
+    if zones:
+        draw_zones(img, cfg.zones)
     ok, buf = cv2.imencode(".png", img)
     return buf.tobytes() if ok else b""
 
 
 PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>NEXUS Footfall</title><style>
-:root{--bg:#0f1115;--card:#181b22;--fg:#e8eaf0;--mut:#8b93a7;--g:#3ddc84;--r:#ff6b6b;--b:#4aa3ff}
-@media (prefers-color-scheme:light){:root{--bg:#f4f5f8;--card:#fff;--fg:#14161c;--mut:#5b6377}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px system-ui,sans-serif}
-main{max-width:1100px;margin:0 auto;padding:16px}h1{font-size:20px;margin:0 0 4px}
-.sub{color:var(--mut);margin-bottom:16px}.grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
-.card{background:var(--card);border-radius:12px;padding:14px}.k{color:var(--mut);font-size:13px}
-.v{font-size:34px;font-weight:700;margin-top:4px}.row{display:grid;gap:12px;margin-top:12px;grid-template-columns:1.4fr 1fr}
-@media(max-width:800px){.row{grid-template-columns:1fr}}canvas,img{width:100%;border-radius:8px;display:block}
-select,input{background:var(--bg);color:var(--fg);border:1px solid var(--mut);border-radius:6px;padding:4px 6px}
-.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px}
+<title>NEXUS Store Analytics</title><style>
+:root{--bg:#eceff2;--card:#fff;--fg:#131820;--mut:#566170;--line:#d3d9e0;--g:#11743f;--r:#bb3b27;--a:#9a6200;--af:#f0b429;--bar:#c9d3df}
+@media (prefers-color-scheme:dark){:root{--bg:#0d1116;--card:#151a21;--fg:#e5e9ef;--mut:#8d97a6;--line:#2a323d;--g:#3ecf8e;--r:#ff7d68;--a:#f0b429;--bar:#33404f}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:1180px;margin:0 auto;padding:16px;display:grid;gap:14px}
+header{display:flex;flex-wrap:wrap;gap:10px 18px;justify-content:space-between;align-items:end}
+h1{font-size:24px;margin:0}h2{font-size:12px;letter-spacing:.09em;text-transform:uppercase;color:var(--mut);margin:0 0 10px}
+.sub{color:var(--mut)}.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px}
+.banner{background:var(--af);color:#1b1400;border-radius:8px;padding:8px 12px;font-weight:600}
+.kpis{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;min-width:0}
+.k{color:var(--mut);font-size:12px;text-transform:uppercase;letter-spacing:.07em}.v{font:600 32px/1.15 ui-monospace,Menlo,Consolas,monospace;margin-top:2px}
+.two{display:grid;gap:14px;grid-template-columns:1.15fr 1fr;align-items:start}
+@media(max-width:860px){.two{grid-template-columns:1fr}}
+ul.ins{margin:0;padding-left:18px;display:grid;gap:6px}
+.zrow{display:grid;grid-template-columns:minmax(90px,140px) 1fr 104px 64px;gap:10px;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)}
+.zrow.head{color:var(--mut);font-size:11px;text-transform:uppercase;letter-spacing:.07em}
+.bar{height:14px;background:var(--bar);border-radius:3px;overflow:hidden}.bar i{display:block;height:100%;background:var(--af)}
+.pill{font-size:10px;border-radius:99px;padding:1px 7px;margin-left:6px;font-weight:700;vertical-align:middle}
+.pill.top{background:var(--g);color:#fff}.pill.low{background:var(--r);color:#fff}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.frow{display:grid;grid-template-columns:150px 1fr 90px;gap:10px;align-items:center;margin:6px 0}
+.small{color:var(--mut);font-size:12.5px}img,canvas{width:100%;display:block;border-radius:8px}
+select,input{background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:4px 6px}
+.flow div{display:flex;justify-content:space-between;gap:8px;padding:3px 0;border-bottom:1px solid var(--line)}
+.ctl{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 </style></head><body><main>
-<h1>NEXUS footfall dashboard</h1><div class="sub" id="sub">loading…</div>
-<div class="grid">
-<div class="card"><div class="k">Entries</div><div class="v" id="in" style="color:var(--g)">–</div></div>
-<div class="card"><div class="k">Exits</div><div class="v" id="out" style="color:var(--r)">–</div></div>
-<div class="card"><div class="k">Occupancy now</div><div class="v" id="occ">–</div></div>
-<div class="card"><div class="k">Peak hour (entries)</div><div class="v" id="peak">–</div></div></div>
-<div class="row"><div class="card"><div class="k">Entries / exits per hour</div><canvas id="chart" width="700" height="300"></canvas></div>
-<div class="card"><div class="k">Floor heatmap
-<input type="date" id="day"> <select id="h0"></select>–<select id="h1"></select></div>
-<img id="heat" alt="heatmap"></div></div></main><script>
+<header><div><h1>NEXUS store analytics</h1><div class="sub" id="sub">loading…</div></div>
+<div class="ctl"><input type="date" id="day" aria-label="Last day"><select id="days" aria-label="Range"><option value="1">1 day</option><option value="7">7 days</option><option value="30">30 days</option></select></div></header>
+<div class="banner" id="demo" hidden>Demo data: these visitors are generated, not real.</div>
+<section class="kpis">
+<div class="card"><div class="k">Visitors</div><div class="v" id="visitors">–</div></div>
+<div class="card"><div class="k">Avg visit</div><div class="v" id="avg">–</div></div>
+<div class="card"><div class="k">Bounce rate</div><div class="v" id="bounce">–</div></div>
+<div class="card"><div class="k">Reached checkout</div><div class="v" id="conv">–</div></div>
+<div class="card"><div class="k">Door in / out</div><div class="v" id="door">–</div></div>
+<div class="card"><div class="k">Inside now</div><div class="v" id="occ">–</div></div>
+</section>
+<section class="card"><h2>What the data says</h2><ul class="ins" id="insights"></ul></section>
+<section class="two">
+<div class="card"><h2>Zones, most visited first</h2><div id="zones"></div><div class="small" style="margin-top:8px">Visitors = people who stopped at least a few seconds. Avg stop = time per stop.</div></div>
+<div class="card"><h2>Floor heatmap</h2><img id="heat" alt="Floor heatmap with zones"><div class="ctl small" style="margin-top:8px">Hours <select id="h0"></select> to <select id="h1"></select></div></div>
+</section>
+<section class="two">
+<div class="card"><h2>Funnel</h2><div id="funnel"></div><h2 style="margin-top:16px">Most common paths</h2><div id="paths" class="small"></div></div>
+<div class="card"><h2>Where visitors go next</h2><div class="flow small" id="flow"></div></div>
+</section>
+<section class="card"><h2>Arrivals by hour</h2><canvas id="chart" width="1000" height="260"></canvas></section>
+</main><script>
 const q=new URLSearchParams(location.search),tok=q.get('token')?'&token='+encodeURIComponent(q.get('token')):'';
-const $=id=>document.getElementById(id);const today=new Date(Date.now()-new Date().getTimezoneOffset()*6e4).toISOString().slice(0,10);
-$('day').value=today;for(let h=0;h<=24;h++){for(const s of ['h0','h1']){const o=document.createElement('option');o.value=o.textContent=h;$(s).appendChild(o)}}
-$('h0').value=0;$('h1').value=24;
+const $=id=>document.getElementById(id),pct=v=>v==null?'–':Math.round(v*100)+'%';
+const today=new Date(Date.now()-new Date().getTimezoneOffset()*6e4).toISOString().slice(0,10);$('day').value=today;
+for(let h=0;h<=24;h++)for(const s of['h0','h1']){const o=document.createElement('option');o.value=o.textContent=h;$(s).appendChild(o)}$('h0').value=0;$('h1').value=24;
+const fmt=s=>s>=90?(s/60).toFixed(1)+' min':Math.round(s)+' s';
+function el(t,c,x){const e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e}
 async function get(u){const r=await fetch(u+(u.includes('?')?'&':'?')+'x=1'+tok);return r.json()}
-function chart(rows){const c=$('chart'),x=c.getContext('2d'),w=c.width,h=c.height,p=28;x.clearRect(0,0,w,h);
-const m=Math.max(1,...rows.flatMap(r=>[r.ins,r.outs])),bw=(w-p)/24,st=getComputedStyle(document.body);x.font='11px system-ui';
-rows.forEach((r,i)=>{const X=p+i*bw;const a=(h-p-8)*r.ins/m,b=(h-p-8)*r.outs/m;x.fillStyle='#3ddc84';x.fillRect(X+2,h-p-a,bw/2-3,a);
-x.fillStyle='#ff6b6b';x.fillRect(X+bw/2,h-p-b,bw/2-3,b);if(i%3==0){x.fillStyle=st.color;x.fillText(r.hour.slice(0,2),X+2,h-10)}});
-x.fillStyle=st.color;x.fillText(String(m),2,12)}
-async function refresh(){try{const d=$('day').value;const s=await get('api/summary?date='+d);
-$('in').textContent=s.entries;$('out').textContent=s.exits;$('occ').textContent=s.occupancy??'–';
-$('peak').textContent=s.peak_hour?s.peak_hour+' ('+s.peak_hour_entries+')':'–';
-$('sub').innerHTML='<span class="dot" style="background:'+(s.healthy?'var(--g)':'var(--r)')+'"></span>'+s.camera_id+' · '+s.date+' · '+(s.service_state||'unknown')+(s.fps?' · '+s.fps+' fps':'');
-chart((await get('api/hourly?date='+d)).hours);
-$('heat').src='api/heatmap.png?date='+d+'&h0='+$('h0').value+'&h1='+$('h1').value+'&t='+Date.now()+tok}catch(e){$('sub').textContent='error: '+e}}
-for(const id of ['day','h0','h1'])$(id).onchange=refresh;refresh();setInterval(refresh,10000);
+function zones(r){const box=$('zones');box.replaceChildren();const h=el('div','zrow head');for(const t of['Zone','Share of visitors','Visitors','Avg stop'])h.appendChild(el('span',t=='Zone'||t=='Share of visitors'?'':'num',t));box.appendChild(h);
+const rows=r.zones.filter(z=>z.kind!=='entrance');const areas=rows.filter(z=>z.kind==='area');const top=areas[0],low=areas[areas.length-1];
+for(const z of rows){const row=el('div','zrow'),n=el('span','',z.zone);if(areas.length>1&&z===top&&z.visitors)n.appendChild(el('span','pill top','MOST'));if(areas.length>1&&z===low&&z!==top)n.appendChild(el('span','pill low','LEAST'));
+const b=el('div','bar'),i=document.createElement('i');i.style.width=Math.round(z.visitor_share*100)+'%';b.appendChild(i);row.append(n,b,el('span','num',z.visitors+' · '+pct(z.visitor_share)),el('span','num',z.visits?fmt(z.avg_dwell_s):'–'));box.appendChild(row)}}
+function funnel(r){const box=$('funnel');box.replaceChildren();for(const f of r.funnel){const row=el('div','frow');const b=el('div','bar'),i=document.createElement('i');i.style.width=Math.round(f.pct_of_first*100)+'%';b.appendChild(i);row.append(el('span','',f.step),b,el('span','num',f.count+' · '+pct(f.pct_of_first)));box.appendChild(row)}}
+function chart(a){const c=$('chart'),x=c.getContext('2d'),w=c.width,h=c.height,p=26,m=Math.max(1,...a),bw=(w-p)/24,st=getComputedStyle(document.body);x.clearRect(0,0,w,h);x.font='12px system-ui';
+a.forEach((v,i)=>{const bh=(h-p-10)*v/m;x.fillStyle='#f0b429';x.fillRect(p+i*bw+3,h-p-bh,bw-6,bh);x.fillStyle=st.color;if(i%2==0)x.fillText(String(i).padStart(2,'0'),p+i*bw+3,h-8)});x.fillStyle=st.color;x.fillText(String(m),0,12)}
+async function refresh(){try{const d=$('day').value,n=$('days').value,r=await get('api/analytics?date='+d+'&days='+n),o=r.overview;
+$('visitors').textContent=o.visitors;$('avg').textContent=o.visitors?fmt(o.avg_visit_s):'–';$('bounce').textContent=pct(o.bounce_rate);$('conv').textContent=pct(o.checkout_rate);$('door').textContent=r.entries+' / '+r.exits;$('occ').textContent=r.occupancy??'–';
+$('sub').replaceChildren();const dot=el('span','dot');dot.style.background=r.healthy?'var(--g)':'var(--r)';$('sub').append(dot,r.camera_id+' · '+r.date+(r.days>1?' (last '+r.days+' days)':'')+' · '+(r.service_state||'no live service'));
+$('demo').hidden=!r.demo_data;const ul=$('insights');ul.replaceChildren(...r.insights.map(t=>el('li','',t)));
+zones(r);funnel(r);$('paths').replaceChildren(...(r.paths.length?r.paths.map(p=>el('div','',p.path.join(' → ')+' · '+p.count+' ('+pct(p.share)+')')):[el('div','','No paths yet.')]));
+$('flow').replaceChildren(...r.flow.slice(0,10).map(f=>{const d=el('div');d.append(el('span','',f.source+' → '+f.target),el('b','',String(f.count)));return d}));
+chart(r.hourly.arrivals);$('heat').src='api/heatmap.png?date='+d+'&days='+n+'&h0='+$('h0').value+'&h1='+$('h1').value+'&t='+Date.now()+tok}catch(e){$('sub').textContent='error: '+e}}
+for(const id of['day','days','h0','h1'])$(id).onchange=refresh;refresh();setInterval(refresh,15000);
 </script></body></html>"""
 
 
@@ -178,10 +228,15 @@ def make_handler(cfg: Config, store: EventStore) -> type:
                     return self._json(200, build_summary(cfg, store, day))
                 if url.path == "/api/hourly":
                     return self._json(200, build_hourly(cfg, store, day))
+                if url.path == "/api/analytics":
+                    days = max(1, min(90, int((query.get("days") or ["1"])[0])))
+                    return self._json(200, build_analytics(cfg, store, day, days))
                 if url.path == "/api/heatmap.png":
                     h0 = max(0, min(24, int((query.get("h0") or ["0"])[0])))
                     h1 = max(h0, min(24, int((query.get("h1") or ["24"])[0])))
-                    return self._send(200, build_heatmap_png(cfg, store, day, h0, h1), "image/png")
+                    days = max(1, min(90, int((query.get("days") or ["1"])[0])))
+                    zones = (query.get("zones") or ["1"])[0] != "0"
+                    return self._send(200, build_heatmap_png(cfg, store, day, h0, h1, days, zones), "image/png")
                 return self._json(404, {"error": "not found"})
             except ValueError as exc:
                 return self._json(400, {"error": str(exc)})

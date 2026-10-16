@@ -29,6 +29,21 @@ homography:                      # 4 corners of a rectangular floor patch, in th
   dst: [[0, 0], [499, 0], [499, 499], [0, 499]]          # the same corners on the top-down map
   canvas: [500, 500]             # map size in px; `nexus calibrate --floor-size 6x3` keeps it to scale
 
+# Store zones = the "pages" of your shop. Draw them with:  nexus zones --config ... --source ... --names "Entrance,Display A,Checkout"
+# Polygons are in floor-map coordinates (the top-down grid below, 500x500 by default).
+zones:
+  - {name: Entrance,  kind: entrance, polygon: [[0, 410], [499, 410], [499, 499], [0, 499]]}
+  - {name: Display A, kind: area,     polygon: [[30, 60], [190, 60], [190, 180], [30, 180]]}
+  - {name: Display B, kind: area,     polygon: [[300, 50], [470, 50], [470, 170], [300, 170]]}
+  - {name: Display C, kind: area,     polygon: [[160, 220], [340, 220], [340, 320], [160, 320]]}
+  - {name: Checkout,  kind: checkout, polygon: [[360, 290], [480, 290], [480, 390], [360, 390]]}
+
+analytics:
+  min_zone_dwell_s: 2            # a stop shorter than this is just walking past
+  switch_hold_s: 0.6             # a new zone must hold this long (no flicker at borders)
+  session_timeout_s: 6           # a visitor unseen this long has left
+  funnel: []                     # optional ordered zone names, e.g. [Display A, Checkout]
+
 storage:
   db_path: data/nexus.db
   snapshot_interval_s: 300       # heatmap deltas are saved this often

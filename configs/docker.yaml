@@ -4,6 +4,12 @@ source: rtsp://user:password@192.168.1.50:554/stream1     # <- your camera
 detection:
   model: yolov8n.pt
   device: cpu
+zones:
+  - {name: Entrance,  kind: entrance, polygon: [[0, 410], [499, 410], [499, 499], [0, 499]]}
+  - {name: Display A, kind: area,     polygon: [[30, 60], [190, 60], [190, 180], [30, 180]]}
+  - {name: Display B, kind: area,     polygon: [[300, 50], [470, 50], [470, 170], [300, 170]]}
+  - {name: Display C, kind: area,     polygon: [[160, 220], [340, 220], [340, 320], [160, 320]]}
+  - {name: Checkout,  kind: checkout, polygon: [[360, 290], [480, 290], [480, 390], [360, 390]]}
 storage:
   db_path: /data/nexus.db
 dashboard:
