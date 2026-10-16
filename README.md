@@ -29,3 +29,12 @@ Edit the constants at the top of `footfall_heatmap.py` (coordinates are in the 6
 `--scale` window size.
 
 Current Occupancy = Entries - Exits, never below zero.
+
+## NEXUS Vision Node (alternative single-class build)
+`nexus_vision_node.py` is a standalone `NexusVisionNode` class with 640x640 panes (1280x640
+dashboard), KPI strip on the heatmap pane, homography corners drawn on the camera pane and a
+per-frame 0.99 heatmap decay. Calibration constants are at the top of the file.
+```
+python nexus_vision_node.py --source 0 --anchor center --line 320,540,320,100
+python nexus_vision_node.py --source meeting_room.mp4 --loop
+```
