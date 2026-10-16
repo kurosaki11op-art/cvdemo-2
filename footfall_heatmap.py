@@ -266,6 +266,111 @@ class HeatmapAccumulator:
 
 
 # --------------------------------------------------------------------------- #
+# Identity filter: duplicates, reflections and ID switches
+# --------------------------------------------------------------------------- #
+class IdentityFilter:
+    """Makes track IDs trustworthy before they reach the counter.
+
+    * Confirmation: a track only counts after `min_frames` sightings (drops flicker).
+    * Twin suppression: two simultaneous boxes with near-identical clothing colours
+      and similar size are treated as ONE person (typical for a mirror/glass
+      reflection); only the older / more confident one is kept.
+    * Re-association: if the tracker loses a confirmed person and issues a new raw ID
+      shortly after, nearby and with matching appearance, the new ID is mapped back to
+      the old one so the person is never counted as someone new.
+
+    Appearance = HSV histogram of the upper body (flip-invariant, so mirror images match).
+    """
+
+    def __init__(self, min_frames=5, twin=True, reid=True, twin_thresh=0.85,
+                 reid_thresh=0.7, reid_frames=60, reid_max_dist=500.0):
+        self.min_frames, self.twin, self.reid = min_frames, twin, reid
+        self.twin_thresh, self.reid_thresh = twin_thresh, reid_thresh
+        self.reid_frames, self.reid_max_dist = reid_frames, reid_max_dist
+        self.reset()
+
+    def reset(self):
+        self.frame_no = 0
+        self.canon = {}      # raw tracker id -> canonical id
+        self.hits = {}       # canonical id -> frames seen
+        self.gallery = {}    # canonical id -> last known appearance/position (confirmed only)
+
+    @staticmethod
+    def _hist(frame, box):
+        h_img, w_img = frame.shape[:2]
+        x1, y1, x2, y2 = (int(v) for v in box)
+        w, h = x2 - x1, y2 - y1
+        x1, x2 = x1 + int(0.15 * w), x2 - int(0.15 * w)      # trim background at the sides
+        y2 = y1 + int(0.6 * h)                                # upper body only
+        x1, y1, x2, y2 = max(x1, 0), max(y1, 0), min(x2, w_img), min(y2, h_img)
+        if x2 - x1 < 4 or y2 - y1 < 4:
+            return None
+        hsv = cv2.cvtColor(frame[y1:y2, x1:x2], cv2.COLOR_BGR2HSV)
+        hist = cv2.calcHist([hsv], [0, 1], None, [16, 8], [0, 180, 0, 256])
+        return cv2.normalize(hist, hist, 1.0, 0.0, cv2.NORM_L1)
+
+    @staticmethod
+    def _sim(a, b):
+        if a is None or b is None:
+            return 0.0
+        return float(cv2.compareHist(a, b, cv2.HISTCMP_CORREL))
+
+    @staticmethod
+    def _area(box):
+        return max(box[2] - box[0], 1.0) * max(box[3] - box[1], 1.0)
+
+    def update(self, frame, xyxy, raw_ids, confs):
+        """Returns (indices_to_keep, canonical_ids_for_those_indices)."""
+        self.frame_no += 1
+        n = len(xyxy)
+        hists = [self._hist(frame, b) for b in xyxy]
+        centers = [((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0) for b in xyxy]
+
+        # 1) raw id -> canonical id (re-associate brand-new raw ids with lost people)
+        canon_of = [None] * n
+        present = {self.canon[int(r)] for r in raw_ids if int(r) in self.canon}
+        for k, raw in enumerate(int(r) for r in raw_ids):
+            if raw in self.canon:
+                canon_of[k] = self.canon[raw]
+                continue
+            best, best_sim = None, self.reid_thresh
+            if self.reid:
+                for cid, g in self.gallery.items():
+                    if cid in present or self.frame_no - g["frame"] > self.reid_frames:
+                        continue
+                    dist = np.hypot(centers[k][0] - g["center"][0], centers[k][1] - g["center"][1])
+                    ratio = self._area(xyxy[k]) / g["area"]
+                    sim = self._sim(hists[k], g["hist"])
+                    if dist <= self.reid_max_dist and 0.4 <= ratio <= 2.5 and sim >= best_sim:
+                        best, best_sim = cid, sim
+            self.canon[raw] = best if best is not None else raw
+            canon_of[k] = self.canon[raw]
+            present.add(canon_of[k])
+
+        # 2) twin suppression: strongest (oldest, then most confident) first
+        order = sorted(range(n), key=lambda k: (self.hits.get(canon_of[k], 0), confs[k]), reverse=True)
+        kept = []
+        for k in order:
+            if self.twin and any(
+                    self._sim(hists[k], hists[j]) >= self.twin_thresh
+                    and 0.25 <= self._area(xyxy[k]) / self._area(xyxy[j]) <= 4.0
+                    for j in kept):
+                continue
+            kept.append(k)
+
+        # 3) confirmation + gallery update
+        out = []
+        for k in sorted(kept):
+            cid = canon_of[k]
+            self.hits[cid] = self.hits.get(cid, 0) + 1
+            if self.hits[cid] >= self.min_frames:
+                out.append(k)
+                self.gallery[cid] = {"hist": hists[k], "center": centers[k],
+                                     "area": self._area(xyxy[k]), "frame": self.frame_no}
+        return out, [canon_of[k] for k in out]
+
+
+# --------------------------------------------------------------------------- #
 # Main application
 # --------------------------------------------------------------------------- #
 @dataclass
@@ -279,6 +384,8 @@ class FootfallApp:
     line: tuple = None               # ((x1, y1), (x2, y2)); defaults to TRIPWIRE
     in_direction: str = TRIPWIRE_IN_DIRECTION
     min_frames: int = 5              # a track must be seen this many frames to count
+    twin_filter: bool = True         # merge look-alike simultaneous boxes (reflections)
+    reid: bool = True                # re-link a lost person to their old ID
     model: YOLO = field(init=False)
     counter: TripwireCounter = field(init=False)
     mapper: FloorMapper = field(init=False)
@@ -287,7 +394,7 @@ class FootfallApp:
     def __post_init__(self):
         self.model = YOLO(MODEL_WEIGHTS)
         self.counter = TripwireCounter(*(self.line or TRIPWIRE), in_direction=self.in_direction)
-        self.hits = {}               # track id -> number of frames seen
+        self.identity = IdentityFilter(self.min_frames, twin=self.twin_filter, reid=self.reid)
         self.mapper = FloorMapper(FLOOR_SRC_POINTS, FLOOR_DST_POINTS)
         self.heatmap = HeatmapAccumulator(FLOOR_GRID_SIZE)
         self.is_file = not str(self.source).isdigit()
@@ -305,7 +412,7 @@ class FootfallApp:
         self.model.predictor = None          # rebuilt on next .track() call
         self.counter.last_side.clear()
         self.counter.last_point.clear()
-        self.hits.clear()
+        self.identity.reset()
 
     # -- per-frame ---------------------------------------------------------- #
     def _track(self, frame):
@@ -319,7 +426,7 @@ class FootfallApp:
         xyxy = boxes.xyxy.cpu().numpy()
         ids = boxes.id.cpu().numpy().astype(int)
         confs = boxes.conf.cpu().numpy()
-        return self._filter_tracks(xyxy, ids, confs)
+        return self._filter_tracks(frame, xyxy, ids, confs)
 
     @staticmethod
     def _contained_duplicates(xyxy, confs, thresh=0.8):
@@ -339,17 +446,13 @@ class FootfallApp:
                     break
         return drop
 
-    def _filter_tracks(self, xyxy, ids, confs):
-        """Remove duplicate boxes on one person and ignore tracks that only flicker."""
+    def _filter_tracks(self, frame, xyxy, ids, confs):
+        """Dedupe boxes, merge reflections, repair ID switches, ignore flickering tracks."""
         drop = self._contained_duplicates(xyxy, confs)
-        keep = []
-        for k, tid in enumerate(ids):
-            if k in drop:
-                continue
-            self.hits[int(tid)] = self.hits.get(int(tid), 0) + 1
-            if self.hits[int(tid)] >= self.min_frames:
-                keep.append(k)
-        return xyxy[keep], ids[keep]
+        idx = [k for k in range(len(ids)) if k not in drop]
+        xyxy, ids, confs = xyxy[idx], ids[idx], confs[idx]
+        keep, canon_ids = self.identity.update(frame, xyxy, ids, confs)
+        return xyxy[keep], np.asarray(canon_ids, dtype=int)
 
     def process_frame(self, frame):
         xyxy, ids = self._track(frame)
@@ -498,6 +601,10 @@ def parse_args():
                          "vertical line in the middle; move RIGHT = IN, LEFT = OUT")
     ap.add_argument("--min-frames", type=int, default=5,
                     help="frames a track must persist before it is shown/counted")
+    ap.add_argument("--no-twin-filter", action="store_true",
+                    help="keep look-alike boxes (disable reflection/duplicate merging)")
+    ap.add_argument("--no-reid", action="store_true",
+                    help="disable re-linking of lost tracks to their previous ID")
     ap.add_argument("--pick-points", action="store_true",
                     help="click on the first frame to print calibration coordinates")
     return ap.parse_args()
@@ -522,7 +629,8 @@ def main():
     try:
         FootfallApp(args.source, loop=args.loop, conf=args.conf, imgsz=args.imgsz,
                     device=args.device, anchor=anchor, line=line,
-                    in_direction=args.in_direction, min_frames=args.min_frames).run()
+                    in_direction=args.in_direction, min_frames=args.min_frames,
+                    twin_filter=not args.no_twin_filter, reid=not args.no_reid).run()
     except RuntimeError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
