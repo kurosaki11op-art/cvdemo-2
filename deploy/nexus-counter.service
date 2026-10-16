@@ -1,0 +1,24 @@
+# systemd unit for one camera. Install:
+#   sudo cp deploy/nexus-counter.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now nexus-counter
+[Unit]
+Description=NEXUS Vision Node - counter (entrance-1)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nexus
+WorkingDirectory=/opt/nexus
+ExecStart=/opt/nexus/venv/bin/nexus run --config /etc/nexus/entrance-1.yaml --log-json
+Restart=always
+RestartSec=5
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/nexus
+
+[Install]
+WantedBy=multi-user.target

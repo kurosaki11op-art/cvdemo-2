@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""NEXUS Vision Node - real-time retail footfall counter and 2D spatial heatmap.
+"""LEGACY single-file version, kept for reference (superseded by the `nexus` package).
+
+Known limitation fixed in the package: after a counted crossing, a wobble back over the line
+updated the stored side and the return to the original side could be counted a second time.
+
+NEXUS Vision Node - real-time retail footfall counter and 2D spatial heatmap.
 
 YOLOv8 + ByteTrack people tracking, directional tripwire counting (vector cross
 product), homography mapping to a 500x500 top-down floor canvas, and a decaying

@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nexus-vision-node"
+version = "0.1.0"
+description = "Retail footfall counter and 2D spatial heatmap (YOLOv8 + ByteTrack)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "ultralytics>=8.3",
+    "opencv-python>=4.8",
+    "numpy>=1.24",
+    "pyyaml>=6.0",
+    "lap>=0.5.12",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.5"]
+
+[project.scripts]
+nexus = "nexus.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["nexus*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = ["legacy"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+"nexus/dashboard.py" = ["E501"]   # embedded HTML/JS page

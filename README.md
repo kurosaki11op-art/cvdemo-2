@@ -1,40 +1,59 @@
-# Retail Footfall Counter & 2D Spatial Heatmap
+# NEXUS Vision Node: retail footfall counter + 2D spatial heatmap
 
-YOLOv8 + ByteTrack people tracking, bi-directional tripwire counting, homography mapping to a
-top-down floor plan, and a live Gaussian dwell-time heatmap in one 1280x480 OpenCV window
-(left: 640x480 live feed, right: 640x480 analytics = floor-plan heatmap + KPI column).
+Counts people entering and leaving through a doorway (YOLOv8 + ByteTrack), maps where they
+stand onto a top-down floor plan (homography), builds a dwell-time heatmap, stores anonymous
+events, and serves a dashboard. Runs on a video file, a webcam or an RTSP IP camera.
 
-## Setup
 ```
-python -m venv venv && source venv/bin/activate    # Windows: venv\Scripts\activate
+camera --> FrameSource --> CountingEngine --> EventStore (SQLite) --> Dashboard / API
+                           detector + tracker   events, heatmap deltas,
+                           identity filter      occupancy
+                           tripwire + homography
+                           heatmap
+```
+
+## Quick start (demo window)
+```bash
+python -m venv venv && source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install -r requirements.txt
+python footfall_heatmap.py --source 0 --webcam-demo --conf 0.6    # desk test: lean right = IN
+python footfall_heatmap.py --source store.mp4 --loop              # video file
 ```
+Keys: `q` quit, `r` reset. (`footfall_heatmap.py` is a launcher for `python -m nexus demo`.)
 
-## Run
+## Production workflow
+```bash
+nexus init-config --out configs/nexus.yaml --camera-id entrance-1 --source rtsp://user:pass@cam/stream
+nexus calibrate   --config configs/nexus.yaml --source rtsp://user:pass@cam/stream --floor-size 6x3
+nexus run         --config configs/nexus.yaml          # headless service (24/7)
+nexus dashboard   --config configs/nexus.yaml          # http://127.0.0.1:8080
 ```
-python footfall_heatmap.py --source store.mp4 --loop        # video file
-python footfall_heatmap.py --source 0 --webcam-demo         # desk test: lean right = IN, left = OUT
-python footfall_heatmap.py --source store.mp4 --pick-points # click to print calibration coordinates
+Install with `pip install .` to get the `nexus` command (or use `python -m nexus ...`).
+
+| Command | Purpose |
+|---|---|
+| `demo` | interactive dual-pane window |
+| `run` | headless service: counts, stores, heartbeat, auto-reconnect |
+| `dashboard` | web UI + JSON API (`/api/summary`, `/api/hourly`, `/api/heatmap.png`, `/healthz`) |
+| `calibrate` | click floor corners + tripwire; writes the YAML; `--floor-size 6x3` keeps the map to scale |
+| `label` / `evaluate` | hand-label a clip, then measure accuracy (precision/recall/count error) |
+| `export-model` | export weights to ONNX / TensorRT / OpenVINO |
+| `healthcheck` | exit code for Docker/Kubernetes probes |
+| `purge` | apply the retention policy now |
+
+Everything is configured in one YAML file ([`configs/example.yaml`](configs/example.yaml) documents every key).
+
+## Docs
+- [docs/ACCURACY.md](docs/ACCURACY.md): how to measure real-world accuracy (do this before trusting any number)
+- [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md): Docker, systemd, hardware, RTSP, TLS, backups
+- [docs/PRIVACY.md](docs/PRIVACY.md): what is (not) stored, retention, signage template
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): modules and data flow
+
+## Development
+```bash
+pip install -r requirements-dev.txt
+ruff check . && python -m pytest -q        # no GPU/YOLO needed: tests use a scripted fake detector
 ```
-Keys: `q` quit, `r` reset counts and heatmap.
+`legacy/` holds the original single-file scripts for reference.
 
-## Calibrate for your footage
-Edit the constants at the top of `footfall_heatmap.py` (coordinates are in the 640x480 frame):
-`FLOOR_SRC_POINTS` (4 floor corners: TL, TR, BR, BL), `FLOOR_DST_POINTS` (grid corners) and
-`TRIPWIRE` (or pass `--line X1,Y1,X2,Y2`; `--in-direction right_to_left` swaps IN/OUT).
-
-## Useful flags
-`--conf` detection confidence, `--min-frames` frames before a track counts, `--no-twin-filter`
-(keep look-alike boxes, e.g. two people in identical clothes), `--no-reid`, `--anchor center|feet`,
-`--scale` window size.
-
-Current Occupancy = Entries - Exits, never below zero.
-
-## NEXUS Vision Node (alternative single-class build)
-`nexus_vision_node.py` is a standalone `NexusVisionNode` class with 640x640 panes (1280x640
-dashboard), KPI strip on the heatmap pane, homography corners drawn on the camera pane and a
-per-frame 0.99 heatmap decay. Calibration constants are at the top of the file.
-```
-python nexus_vision_node.py --source 0 --anchor center --line 320,540,320,100
-python nexus_vision_node.py --source meeting_room.mp4 --loop
-```
+Current Occupancy = initial occupancy + entries - exits (never below zero), reset nightly.

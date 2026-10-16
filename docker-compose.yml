@@ -1,0 +1,28 @@
+# One counter per camera + one dashboard. Put your config at ./configs/nexus.yaml
+# (start from configs/docker.yaml), then:  docker compose up -d --build
+services:
+  counter:
+    build: .
+    restart: unless-stopped
+    command: ["run", "--config", "/config/nexus.yaml", "--log-json"]
+    volumes:
+      - ./configs/nexus.yaml:/config/nexus.yaml:ro
+      - nexus-data:/data
+    # NVIDIA GPU: add `deploy.resources.reservations.devices` (driver: nvidia) and set detection.device: "0".
+
+  dashboard:
+    build: .
+    restart: unless-stopped
+    command: ["dashboard", "--config", "/config/nexus.yaml", "--log-json"]
+    volumes:
+      - ./configs/nexus.yaml:/config/nexus.yaml:ro
+      - nexus-data:/data
+    ports:
+      - "127.0.0.1:8080:8080"       # expose through a TLS reverse proxy, not directly
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8080/healthz')"]
+      interval: 30s
+      timeout: 5s
+
+volumes:
+  nexus-data:

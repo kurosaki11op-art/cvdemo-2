@@ -1,0 +1,12 @@
+# Config used by docker-compose.yml (paths are inside the container).
+camera_id: entrance-1
+source: rtsp://user:password@192.168.1.50:554/stream1     # <- your camera
+detection:
+  model: yolov8n.pt
+  device: cpu
+storage:
+  db_path: /data/nexus.db
+dashboard:
+  host: 0.0.0.0
+  port: 8080
+  api_token: change-me-to-a-long-random-string

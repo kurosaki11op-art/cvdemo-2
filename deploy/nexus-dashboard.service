@@ -1,0 +1,19 @@
+[Unit]
+Description=NEXUS Vision Node - dashboard
+After=network-online.target
+
+[Service]
+Type=simple
+User=nexus
+WorkingDirectory=/opt/nexus
+ExecStart=/opt/nexus/venv/bin/nexus dashboard --config /etc/nexus/entrance-1.yaml --log-json
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/nexus
+
+[Install]
+WantedBy=multi-user.target

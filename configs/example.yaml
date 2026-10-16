@@ -1,0 +1,48 @@
+# NEXUS camera configuration. Every key is optional; these are the defaults with explanations.
+# Generate a starting point with:   nexus init-config --out configs/nexus.yaml
+# Fill in the geometry interactively: nexus calibrate --config configs/nexus.yaml --source <video|rtsp://...>
+
+camera_id: entrance-1            # shown in the dashboard; one config + one service per camera
+source: 0                        # video file, webcam index, or rtsp://user:pass@host/stream
+frame_size: [640, 480]           # processing resolution; all coordinates below are in this space
+
+detection:
+  model: yolov8n.pt              # or an exported yolov8n.onnx / .engine (see `nexus export-model`)
+  device: null                   # "cpu", "0" (first GPU), "mps"...; null = auto
+  conf: 0.5                      # raise if you see phantom people, lower if people are missed
+  imgsz: 640
+  tracker: bytetrack.yaml
+  anchor: feet                   # feet = box bottom-centre (use for full-body camera views)
+  min_frames: 5                  # a track must persist this many frames before it counts
+  twin_filter: true              # merge look-alike simultaneous boxes (mirrors/glass reflections)
+  reid: true                     # re-link a briefly lost person to their old id
+
+tripwire:
+  a: [120, 320]                  # line endpoints, e.g. across the doorway
+  b: [520, 320]
+  in_direction: left_to_right    # crossing from the left of A->B to its right = IN
+  deadband_px: 6                 # ignore jitter this close to the line
+  rearm_px: 40                   # an id can be counted again only after moving this far away
+
+homography:                      # 4 corners of a rectangular floor patch, in this order:
+  src: [[190, 167], [450, 167], [590, 467], [50, 467]]   # top-left, top-right, bottom-right, bottom-left
+  dst: [[0, 0], [499, 0], [499, 499], [0, 499]]          # the same corners on the top-down map
+  canvas: [500, 500]             # map size in px; `nexus calibrate --floor-size 6x3` keeps it to scale
+
+storage:
+  db_path: data/nexus.db
+  snapshot_interval_s: 300       # heatmap deltas are saved this often
+  retention_days: 90             # older events/heatmaps are deleted automatically (0 = keep forever)
+
+service:
+  occupancy_reset: "03:00"       # local time; occupancy is reset to initial_occupancy once a day
+  initial_occupancy: 0           # people already inside when the service (re)starts or resets
+  max_fps: 15                    # live sources are throttled to this
+  reconnect_delay_s: 5
+  heartbeat_s: 5
+  loop: false
+
+dashboard:
+  host: 127.0.0.1                # keep on localhost behind a reverse proxy; see docs/DEPLOYMENT.md
+  port: 8080
+  api_token: null                # set a long random string to require ?token=... / Bearer auth
