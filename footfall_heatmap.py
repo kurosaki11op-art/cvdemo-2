@@ -8,6 +8,7 @@ dual-pane window.
 Usage:
     python footfall_heatmap.py --source store.mp4 --loop
     python footfall_heatmap.py --source 0                  # webcam
+    python footfall_heatmap.py --source 0 --anchor center  # close-up webcam test
     python footfall_heatmap.py --source store.mp4 --pick-points   # calibration helper
 
 Keys: 'q' quit | 'r' reset counts and heatmap
@@ -274,6 +275,7 @@ class FootfallApp:
     conf: float = CONF_THRESHOLD
     imgsz: int = 640
     device: str = None
+    anchor: str = "feet"
     model: YOLO = field(init=False)
     counter: TripwireCounter = field(init=False)
     mapper: FloorMapper = field(init=False)
@@ -314,7 +316,10 @@ class FootfallApp:
     def process_frame(self, frame):
         xyxy, ids = self._track(frame)
 
-        feet = [((x1 + x2) / 2.0, y2) for x1, y1, x2, y2 in xyxy]   # centre-bottom
+        if self.anchor == "center":     # close-up webcam demo: use the box centre
+            feet = [((x1 + x2) / 2.0, (y1 + y2) / 2.0) for x1, y1, x2, y2 in xyxy]
+        else:                           # real CCTV view: feet contact point (centre-bottom)
+            feet = [((x1 + x2) / 2.0, y2) for x1, y1, x2, y2 in xyxy]
         floor_pts = self.mapper.transform(feet)
 
         flashes = {}
@@ -441,6 +446,9 @@ def parse_args():
     ap.add_argument("--conf", type=float, default=CONF_THRESHOLD, help="detection confidence")
     ap.add_argument("--imgsz", type=int, default=640, help="YOLO inference size")
     ap.add_argument("--device", default=None, help="e.g. cpu, 0, mps")
+    ap.add_argument("--anchor", choices=["feet", "center"], default="feet",
+                    help="point tracked for counting/heatmap: 'feet' (default, for full-body "
+                         "camera views) or 'center' (for close-up webcam testing)")
     ap.add_argument("--pick-points", action="store_true",
                     help="click on the first frame to print calibration coordinates")
     return ap.parse_args()
@@ -453,7 +461,7 @@ def main():
         return 0
     try:
         FootfallApp(args.source, loop=args.loop, conf=args.conf,
-                    imgsz=args.imgsz, device=args.device).run()
+                    imgsz=args.imgsz, device=args.device, anchor=args.anchor).run()
     except RuntimeError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
