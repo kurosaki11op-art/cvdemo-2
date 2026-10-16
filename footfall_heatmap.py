@@ -70,7 +70,7 @@ SIDE_DEADBAND_PX = 6.0                # ignore jitter within this distance of th
 # Detection
 MODEL_WEIGHTS = "yolov8n.pt"
 TRACKER_CFG = "bytetrack.yaml"
-CONF_THRESHOLD = 0.35
+CONF_THRESHOLD = 0.5
 WINDOW_NAME = "Retail Footfall Counter & Heatmap"
 
 
