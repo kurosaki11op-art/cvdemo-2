@@ -8,7 +8,7 @@ dual-pane window.
 Usage:
     python footfall_heatmap.py --source store.mp4 --loop
     python footfall_heatmap.py --source 0                  # webcam
-    python footfall_heatmap.py --source 0 --anchor center  # close-up webcam test
+    python footfall_heatmap.py --source 0 --webcam-demo    # desk test: lean right = IN, left = OUT
     python footfall_heatmap.py --source store.mp4 --pick-points   # calibration helper
 
 Keys: 'q' quit | 'r' reset counts and heatmap
@@ -276,6 +276,9 @@ class FootfallApp:
     imgsz: int = 640
     device: str = None
     anchor: str = "feet"
+    line: tuple = None               # ((x1, y1), (x2, y2)); defaults to TRIPWIRE
+    in_direction: str = TRIPWIRE_IN_DIRECTION
+    min_frames: int = 5              # a track must be seen this many frames to count
     model: YOLO = field(init=False)
     counter: TripwireCounter = field(init=False)
     mapper: FloorMapper = field(init=False)
@@ -283,7 +286,8 @@ class FootfallApp:
 
     def __post_init__(self):
         self.model = YOLO(MODEL_WEIGHTS)
-        self.counter = TripwireCounter(*TRIPWIRE, in_direction=TRIPWIRE_IN_DIRECTION)
+        self.counter = TripwireCounter(*(self.line or TRIPWIRE), in_direction=self.in_direction)
+        self.hits = {}               # track id -> number of frames seen
         self.mapper = FloorMapper(FLOOR_SRC_POINTS, FLOOR_DST_POINTS)
         self.heatmap = HeatmapAccumulator(FLOOR_GRID_SIZE)
         self.is_file = not str(self.source).isdigit()
@@ -301,6 +305,7 @@ class FootfallApp:
         self.model.predictor = None          # rebuilt on next .track() call
         self.counter.last_side.clear()
         self.counter.last_point.clear()
+        self.hits.clear()
 
     # -- per-frame ---------------------------------------------------------- #
     def _track(self, frame):
@@ -311,7 +316,40 @@ class FootfallApp:
         boxes = results[0].boxes
         if boxes is None or boxes.id is None:
             return np.empty((0, 4)), np.empty((0,), dtype=int)
-        return boxes.xyxy.cpu().numpy(), boxes.id.cpu().numpy().astype(int)
+        xyxy = boxes.xyxy.cpu().numpy()
+        ids = boxes.id.cpu().numpy().astype(int)
+        confs = boxes.conf.cpu().numpy()
+        return self._filter_tracks(xyxy, ids, confs)
+
+    @staticmethod
+    def _contained_duplicates(xyxy, confs, thresh=0.8):
+        """Indices of boxes that are (almost) inside a stronger box: same person, 2 boxes."""
+        drop = set()
+        areas = (xyxy[:, 2] - xyxy[:, 0]) * (xyxy[:, 3] - xyxy[:, 1])
+        for i in range(len(xyxy)):
+            for j in range(len(xyxy)):
+                if i == j or j in drop:
+                    continue
+                iw = min(xyxy[i, 2], xyxy[j, 2]) - max(xyxy[i, 0], xyxy[j, 0])
+                ih = min(xyxy[i, 3], xyxy[j, 3]) - max(xyxy[i, 1], xyxy[j, 1])
+                inter = max(iw, 0) * max(ih, 0)
+                # i mostly inside j, and j is the more confident / larger box -> drop i
+                if inter / max(areas[i], 1e-6) > thresh and (confs[j], areas[j]) >= (confs[i], areas[i]):
+                    drop.add(i)
+                    break
+        return drop
+
+    def _filter_tracks(self, xyxy, ids, confs):
+        """Remove duplicate boxes on one person and ignore tracks that only flicker."""
+        drop = self._contained_duplicates(xyxy, confs)
+        keep = []
+        for k, tid in enumerate(ids):
+            if k in drop:
+                continue
+            self.hits[int(tid)] = self.hits.get(int(tid), 0) + 1
+            if self.hits[int(tid)] >= self.min_frames:
+                keep.append(k)
+        return xyxy[keep], ids[keep]
 
     def process_frame(self, frame):
         xyxy, ids = self._track(frame)
@@ -449,6 +487,17 @@ def parse_args():
     ap.add_argument("--anchor", choices=["feet", "center"], default="feet",
                     help="point tracked for counting/heatmap: 'feet' (default, for full-body "
                          "camera views) or 'center' (for close-up webcam testing)")
+    ap.add_argument("--line", default=None, metavar="X1,Y1,X2,Y2",
+                    help="tripwire endpoints in 1280x720 frame coords (overrides the default)")
+    ap.add_argument("--in-direction", choices=["left_to_right", "right_to_left"],
+                    default=TRIPWIRE_IN_DIRECTION,
+                    help="crossing from the left-hand to the right-hand side of the line "
+                         "(looking from its first point to its second) counts as IN")
+    ap.add_argument("--webcam-demo", action="store_true",
+                    help="preset for testing at a desk: tracks the box centre and uses a "
+                         "vertical line in the middle; move RIGHT = IN, LEFT = OUT")
+    ap.add_argument("--min-frames", type=int, default=5,
+                    help="frames a track must persist before it is shown/counted")
     ap.add_argument("--pick-points", action="store_true",
                     help="click on the first frame to print calibration coordinates")
     return ap.parse_args()
@@ -459,9 +508,21 @@ def main():
     if args.pick_points:
         pick_points(args.source)
         return 0
+    line, anchor = None, args.anchor
+    if args.webcam_demo:
+        # Directed upwards, so its right-hand side is the screen's right: left->right = IN
+        line, anchor = ((FRAME_W // 2, FRAME_H - 100), (FRAME_W // 2, 100)), "center"
+    if args.line:
+        try:
+            x1, y1, x2, y2 = (int(v) for v in args.line.split(","))
+        except ValueError:
+            print("Error: --line must be X1,Y1,X2,Y2 (four integers)", file=sys.stderr)
+            return 1
+        line = ((x1, y1), (x2, y2))
     try:
-        FootfallApp(args.source, loop=args.loop, conf=args.conf,
-                    imgsz=args.imgsz, device=args.device, anchor=args.anchor).run()
+        FootfallApp(args.source, loop=args.loop, conf=args.conf, imgsz=args.imgsz,
+                    device=args.device, anchor=anchor, line=line,
+                    in_direction=args.in_direction, min_frames=args.min_frames).run()
     except RuntimeError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
