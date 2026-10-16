@@ -77,3 +77,25 @@ def test_old_identities_are_pruned():
     for _ in range(300):
         idf.update(f, empty, [], np.array([]))
     assert 1 not in idf.active_ids() and not idf.canon
+
+
+def test_small_reflection_is_merged_and_the_more_confident_box_wins():
+    f = np.full((480, 640, 3), 40, np.uint8)
+    f[100:400, 50:170] = RED          # the person: large
+    f[200:300, 400:450] = RED         # the reflection: same colours, about 1/7 of the area
+    boxes = np.array([[50, 100, 170, 400], [400, 200, 450, 300.]])
+    kept, _ = IdentityFilter(min_frames=1).update(f, boxes, [1, 2], np.array([0.55, 0.9]))
+    assert kept == [1]                                       # the more confident box survives
+
+
+def test_an_older_but_fainter_track_does_not_beat_the_real_person():
+    idf = IdentityFilter(min_frames=1)
+    f, b = scene((400, RED))
+    for _ in range(8):                                       # the faint ghost is established first
+        idf.update(f, b, [2], np.array([0.5]))
+    f2 = np.full((480, 640, 3), 40, np.uint8)
+    f2[100:400, 50:170] = RED
+    f2[100:400, 400:520] = RED
+    both = np.array([[50, 100, 170, 400], [400, 100, 520, 400.]])
+    kept, ids = idf.update(f2, both, [1, 2], np.array([0.9, 0.5]))
+    assert ids == [1] and kept == [0]

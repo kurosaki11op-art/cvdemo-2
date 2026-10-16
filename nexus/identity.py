@@ -36,9 +36,9 @@ class IdentityFilter:
     """Makes track IDs trustworthy before they reach the counter.
 
     * Confirmation: a track only counts after ``min_frames`` sightings (drops flicker).
-    * Twin suppression: two simultaneous boxes with near-identical clothing colours and
-      similar size are treated as ONE person (typical for a mirror/glass reflection);
-      the older / more confident one is kept. Disable if people wear identical uniforms.
+    * Twin suppression: two simultaneous boxes with near-identical clothing colours (and a
+      size ratio within 10x) are treated as ONE person (typical for a mirror/glass reflection);
+      the more confident one is kept. Disable if people wear identical uniforms.
     * Re-association: if the tracker loses a confirmed person and issues a new raw ID
       shortly after, nearby and with matching appearance, the new ID is mapped back to the
       old one so the person is not counted twice.
@@ -60,6 +60,7 @@ class IdentityFilter:
         self.frame_no = 0
         self.canon: Dict[int, int] = {}      # raw tracker id -> canonical id
         self.hits: Dict[int, int] = {}       # canonical id -> frames seen
+        self.conf_ema: Dict[int, float] = {}  # canonical id -> smoothed detector confidence
         self.last_seen: Dict[int, int] = {}  # canonical id -> frame number
         self.gallery: Dict[int, dict] = {}   # canonical id -> last appearance (confirmed only)
 
@@ -120,13 +121,20 @@ class IdentityFilter:
             canon_of[k] = self.canon[raw]
             present.add(canon_of[k])
 
-        # 2) twin suppression: strongest (oldest, then most confident) first
-        order = sorted(range(n), key=lambda k: (self.hits.get(canon_of[k], 0), confs[k]), reverse=True)
+        for k in range(n):
+            cid = canon_of[k]
+            prev = self.conf_ema.get(cid)
+            self.conf_ema[cid] = float(confs[k]) if prev is None else 0.9 * prev + 0.1 * float(confs[k])
+
+        # 2) twin suppression: keep the more confident track (a reflection is usually fainter),
+        #    ties broken by age. Ranking by age alone fails when the reflection's track is older.
+        order = sorted(range(n), key=lambda k: (self.conf_ema[canon_of[k]], self.hits.get(canon_of[k], 0)),
+                       reverse=True)
         kept: List[int] = []
         for k in order:
             if self.twin and any(
                     self._sim(hists[k], hists[j]) >= self.twin_thresh
-                    and 0.25 <= self._area(xyxy[k]) / self._area(xyxy[j]) <= 4.0
+                    and 0.1 <= self._area(xyxy[k]) / self._area(xyxy[j]) <= 10.0
                     for j in kept):
                 continue
             kept.append(k)
@@ -150,6 +158,7 @@ class IdentityFilter:
         stale = {c for c, f in self.last_seen.items() if self.frame_no - f > self.forget_frames}
         for c in stale:
             self.hits.pop(c, None)
+            self.conf_ema.pop(c, None)
             self.last_seen.pop(c, None)
             self.gallery.pop(c, None)
         if stale:
