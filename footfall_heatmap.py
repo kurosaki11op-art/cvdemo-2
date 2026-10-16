@@ -402,11 +402,30 @@ class FootfallApp:
 
     # -- video io ----------------------------------------------------------- #
     def _open(self):
-        src = self.source if self.is_file else int(self.source)
-        cap = cv2.VideoCapture(src)
+        if self.is_file:
+            cap = cv2.VideoCapture(self.source)
+        else:
+            cap = self._open_webcam(int(self.source))
         if not cap.isOpened():
             raise RuntimeError(f"Cannot open video source: {self.source!r}")
         return cap
+
+    @staticmethod
+    def _open_webcam(index):
+        """Open a webcam, preferring DirectShow on Windows (MSMF often fails to grab frames)."""
+        backends = [cv2.CAP_DSHOW, cv2.CAP_ANY] if sys.platform == "win32" else [cv2.CAP_ANY]
+        for backend in backends:
+            cap = cv2.VideoCapture(index, backend)
+            if cap.isOpened():
+                for _ in range(10):          # warm-up: first frames are often empty
+                    ok, _frame = cap.read()
+                    if ok:
+                        return cap
+            cap.release()
+        raise RuntimeError(
+            f"Webcam {index} opened but delivered no frames. Close other apps using the "
+            "camera (another copy of this script, Zoom/Teams/browser tabs) and try "
+            "--source 1 if you have more than one camera.")
 
     def _reset_tracker(self):
         """Forget tracker state (new IDs) - used when a video loops."""
@@ -536,9 +555,15 @@ class FootfallApp:
     # -- main loop ---------------------------------------------------------- #
     def run(self):
         cap = self._open()
+        failed_reads = 0
         try:
             while True:
                 ok, frame = cap.read()
+                if not ok and not self.is_file and failed_reads < 30:
+                    failed_reads += 1        # live camera: tolerate brief dropouts
+                    cv2.waitKey(10)
+                    continue
+                failed_reads = 0
                 if not ok:
                     if self.is_file and self.loop:
                         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
