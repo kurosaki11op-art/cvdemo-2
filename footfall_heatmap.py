@@ -42,10 +42,10 @@ from ultralytics import YOLO
 # --------------------------------------------------------------------------- #
 # Configuration (edit these for your camera)
 # --------------------------------------------------------------------------- #
-FRAME_W, FRAME_H = 1280, 720          # processing resolution
+FRAME_W, FRAME_H = 640, 480            # processing resolution = size of EACH pane
 
 # Virtual tripwire (x1, y1) -> (x2, y2), in processing-frame pixels (DUMMY VALUES).
-TRIPWIRE = ((240, 480), (1040, 480))
+TRIPWIRE = ((120, 320), (520, 320))
 # "left_to_right": crossing from the left-hand side of the directed line A->B to
 # its right-hand side counts as IN (for a line drawn left->right on screen that
 # means moving DOWN the screen). Use "right_to_left" to swap IN and OUT.
@@ -53,7 +53,7 @@ TRIPWIRE_IN_DIRECTION = "left_to_right"
 
 # Homography calibration (DUMMY VALUES - recalibrate, see guide above).
 # Order: top-left, top-right, bottom-right, bottom-left.
-FLOOR_SRC_POINTS = [(380, 250), (900, 250), (1180, 700), (100, 700)]
+FLOOR_SRC_POINTS = [(190, 167), (450, 167), (590, 467), (50, 467)]
 FLOOR_GRID_SIZE = (500, 500)          # (width, height) of the top-down grid
 FLOOR_DST_POINTS = [(0, 0), (499, 0), (499, 499), (0, 499)]
 
@@ -386,7 +386,7 @@ class FootfallApp:
     min_frames: int = 5              # a track must be seen this many frames to count
     twin_filter: bool = True         # merge look-alike simultaneous boxes (reflections)
     reid: bool = True                # re-link a lost person to their old ID
-    scale: float = 0.75              # display scaling only (processing is unaffected)
+    scale: float = 1.0               # display scaling only (processing is unaffected)
     model: YOLO = field(init=False)
     counter: TripwireCounter = field(init=False)
     mapper: FloorMapper = field(init=False)
@@ -506,23 +506,32 @@ class FootfallApp:
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 2, cv2.LINE_AA)
             cv2.circle(left, (int(foot[0]), int(foot[1])), 5, (0, 0, 255), -1)
 
-        self._draw_hud(left, len(ids))
+        cv2.putText(left, "LIVE FEED", (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                    (255, 255, 255), 2, cv2.LINE_AA)
 
-        right = self.heatmap.render(floor_pts, out_size=(FRAME_H, FRAME_H))
+        right = self._build_right_pane(floor_pts, len(ids))
         return cv2.hconcat([left, right])
 
-    def _draw_hud(self, img, in_view):
-        lines = [
-            (f"IN: {self.counter.count_in}", (0, 255, 0)),
-            (f"OUT: {self.counter.count_out}", (0, 0, 255)),
-            (f"Current Occupancy: {self.counter.occupancy}", (255, 255, 255)),
-            (f"In view: {in_view}", (200, 200, 200)),
+    def _build_right_pane(self, floor_pts, in_view):
+        """640x480 analytics pane: 480x480 floor-plan heatmap + a 160px HUD column."""
+        floor = self.heatmap.render(floor_pts, out_size=(FRAME_H, FRAME_H))
+        hud_w = FRAME_W - FRAME_H
+        hud = np.full((FRAME_H, hud_w, 3), 20, dtype=np.uint8)
+        rows = [
+            ("Total Entries", self.counter.count_in, (0, 255, 0)),
+            ("Total Exits", self.counter.count_out, (60, 60, 255)),
+            ("Current Occupancy", self.counter.occupancy, (255, 255, 255)),
+            ("In view", in_view, (200, 200, 200)),
         ]
-        cv2.rectangle(img, (10, 10), (360, 20 + 34 * len(lines)), (0, 0, 0), -1)
-        cv2.rectangle(img, (10, 10), (360, 20 + 34 * len(lines)), (255, 255, 255), 1)
-        for i, (text, color) in enumerate(lines):
-            cv2.putText(img, text, (20, 42 + 34 * i), cv2.FONT_HERSHEY_SIMPLEX,
-                        0.9, color, 2, cv2.LINE_AA)
+        row_h = FRAME_H // len(rows)
+        for i, (label, value, color) in enumerate(rows):
+            y0 = i * row_h
+            cv2.putText(hud, label, (8, y0 + 28), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                        (180, 180, 180), 1, cv2.LINE_AA)
+            cv2.putText(hud, str(value), (8, y0 + 85), cv2.FONT_HERSHEY_SIMPLEX, 2.0,
+                        color, 3, cv2.LINE_AA)
+            cv2.line(hud, (0, y0 + row_h - 1), (hud_w, y0 + row_h - 1), (70, 70, 70), 1)
+        return cv2.hconcat([floor, hud])
 
     # -- main loop ---------------------------------------------------------- #
     def run(self):
@@ -596,7 +605,7 @@ def parse_args():
                     help="point tracked for counting/heatmap: 'feet' (default, for full-body "
                          "camera views) or 'center' (for close-up webcam testing)")
     ap.add_argument("--line", default=None, metavar="X1,Y1,X2,Y2",
-                    help="tripwire endpoints in 1280x720 frame coords (overrides the default)")
+                    help="tripwire endpoints in 640x480 frame coords (overrides the default)")
     ap.add_argument("--in-direction", choices=["left_to_right", "right_to_left"],
                     default=TRIPWIRE_IN_DIRECTION,
                     help="crossing from the left-hand to the right-hand side of the line "
@@ -610,8 +619,8 @@ def parse_args():
                     help="keep look-alike boxes (disable reflection/duplicate merging)")
     ap.add_argument("--no-reid", action="store_true",
                     help="disable re-linking of lost tracks to their previous ID")
-    ap.add_argument("--scale", type=float, default=0.75,
-                    help="window size factor (default 0.75 fits a 1920px screen; 1.0 = full size)")
+    ap.add_argument("--scale", type=float, default=1.0,
+                    help="window size factor (default 1.0 = 1280x480 window)")
     ap.add_argument("--pick-points", action="store_true",
                     help="click on the first frame to print calibration coordinates")
     return ap.parse_args()
