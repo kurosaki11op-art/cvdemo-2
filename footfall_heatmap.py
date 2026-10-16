@@ -386,6 +386,7 @@ class FootfallApp:
     min_frames: int = 5              # a track must be seen this many frames to count
     twin_filter: bool = True         # merge look-alike simultaneous boxes (reflections)
     reid: bool = True                # re-link a lost person to their old ID
+    scale: float = 0.75              # display scaling only (processing is unaffected)
     model: YOLO = field(init=False)
     counter: TripwireCounter = field(init=False)
     mapper: FloorMapper = field(init=False)
@@ -537,7 +538,11 @@ class FootfallApp:
                     print("End of stream.")
                     break
                 frame = cv2.resize(frame, (FRAME_W, FRAME_H))
-                cv2.imshow(WINDOW_NAME, self.process_frame(frame))
+                view = self.process_frame(frame)
+                if self.scale != 1.0:
+                    view = cv2.resize(view, None, fx=self.scale, fy=self.scale,
+                                      interpolation=cv2.INTER_AREA)
+                cv2.imshow(WINDOW_NAME, view)
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord("q"):
                     break
@@ -605,6 +610,8 @@ def parse_args():
                     help="keep look-alike boxes (disable reflection/duplicate merging)")
     ap.add_argument("--no-reid", action="store_true",
                     help="disable re-linking of lost tracks to their previous ID")
+    ap.add_argument("--scale", type=float, default=0.75,
+                    help="window size factor (default 0.75 fits a 1920px screen; 1.0 = full size)")
     ap.add_argument("--pick-points", action="store_true",
                     help="click on the first frame to print calibration coordinates")
     return ap.parse_args()
@@ -630,7 +637,8 @@ def main():
         FootfallApp(args.source, loop=args.loop, conf=args.conf, imgsz=args.imgsz,
                     device=args.device, anchor=anchor, line=line,
                     in_direction=args.in_direction, min_frames=args.min_frames,
-                    twin_filter=not args.no_twin_filter, reid=not args.no_reid).run()
+                    twin_filter=not args.no_twin_filter, reid=not args.no_reid,
+                    scale=args.scale).run()
     except RuntimeError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
