@@ -3,3 +3,23 @@ opencv-python
 numpy
 pyyaml
 lap
+
+# GeoAI / spatial data science stack (src/)
+torch
+torchvision
+fastapi
+uvicorn
+geopandas
+rasterio
+shapely
+pyproj
+h3
+osmnx
+networkx
+libpysal
+esda
+scikit-learn
+xgboost
+shap
+pystac-client
+planetary-computer
